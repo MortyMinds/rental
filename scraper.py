@@ -1,0 +1,715 @@
+from scrapling.fetchers import StealthyFetcher
+import logging
+import asyncio
+from utils import extract_fees_from_description, parse_address, extract_property_type
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+class ScraperRegistry:
+    """Registry to manage different scrapers for different platforms."""
+    _scrapers = {}
+
+    @classmethod
+    def register(cls, platform_name):
+        def decorator(scraper_class):
+            cls._scrapers[platform_name.lower()] = scraper_class
+            return scraper_class
+        return decorator
+
+    @classmethod
+    def get_scraper(cls, platform_name):
+        scraper_class = cls._scrapers.get(platform_name.lower())
+        if not scraper_class:
+            raise ValueError(f"No scraper registered for platform: {platform_name}")
+        return scraper_class()
+
+class BaseScraper:
+    def __init__(self, source: str):
+        self.source = source
+        
+    async def fetch(self, url: str):
+        """
+        Fetch the HTML content of the page with multiple fallback prefixes.
+        Sequence: markdown.new -> r.jina.ai -> defuddle.md -> raw url
+        """
+        import httpx
+        from scrapling import Adaptor
+        
+        prefixes = [
+            "https://markdown.new/",
+            "https://r.jina.ai/",
+            "https://defuddle.md/",
+            "" # Raw URL fallback
+        ]
+        
+        # Browser-imitation headers based on debug success
+        browser_headers = {
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Accept-Encoding": "gzip, deflate, br",
+            "DNT": "1",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none",
+            "Sec-Fetch-User": "?1",
+            "Referer": "https://www.google.com/"
+        }
+        
+        last_error = None
+        for prefix in prefixes:
+            current_url = f"{prefix}{url}" if prefix else url
+            logging.info(f"Trying to fetch {self.source} via: {current_url}")
+            
+            try:
+                # Use a more realistic browser-like user agent
+                async with httpx.AsyncClient(timeout=60.0, follow_redirects=True, headers=browser_headers) as client:
+                    resp = await client.get(current_url)
+                    text = resp.text
+                    status = resp.status_code
+                    
+                    # Log snippet if it's very short
+                    if text and len(text) < 100:
+                        logging.debug(f"Tiny response from {current_url}: '{text}'")
+
+                # Check if we got a valid response
+                # Relaxed length check to 300 to capture shorter but valid pages
+                is_valid = status == 200 and text and text != "None" and len(text) > 300
+                # Check for block markers in proxy responses
+                # Case-insensitive check
+                block_markers = ["forbidden", "access denied", "captcha", "press & hold", "human verification", "robot", "confirm you are human", "blocked"]
+                text_lower = text.lower() if text else ""
+                
+                # If we find actual listing markers, ignore the captcha markers (Zillow often hides data behind overlay)
+                has_listings = any(m in text_lower for m in ['property-card', 'v2-home-card', 'data-test="property-card"', 'list-card_for-rent'])
+                
+                if any(marker in text_lower for marker in block_markers) and not has_listings:
+                    logging.warning(f"Fetch via '{prefix}' returned a block/captcha page. Skipping.")
+                    continue
+                        
+                if is_valid:
+                    logging.info(f"Successfully fetched {self.source} using prefix: '{prefix}' (Found Listings: {has_listings})")
+                    # Wrap in Adaptor to maintain compatibility with .css() calls
+                    return Adaptor(text)
+                else:
+                    logging.warning(f"Fetch via '{prefix}' failed. Status: {status}, Length: {len(text) if text else 0}")
+            except Exception as e:
+                logging.warning(f"Error fetching via '{prefix}': {e}")
+                last_error = e
+                
+        logging.error(f"All fetch attempts failed for {url}. Last error: {last_error}")
+        return None
+
+    def parse(self, response):
+        """
+        Should return a list of listing dictionaries from a search result page.
+        """
+        raise NotImplementedError("Subclasses must implement parse()")
+
+    def parse_detail(self, response) -> dict:
+        """
+        Should return a dictionary of fields from a detail page.
+        """
+        raise NotImplementedError("Subclasses must implement parse_detail()")
+
+    def _clean_price(self, price_str: str) -> int:
+        if not price_str:
+            return 0
+        cleaned = "".join(filter(str.isdigit, price_str))
+        return int(cleaned) if cleaned else 0
+
+@ScraperRegistry.register("zillow")
+class ZillowScraper(BaseScraper):
+    """
+    Scraper for Zillow rental listings.
+    Note: For higher volume, consider using the internal search API:
+    https://www.zillow.com/async-create-search-page-state
+    """
+    def __init__(self):
+        super().__init__("zillow")
+
+    def parse(self, response):
+        listings = []
+        try:
+            # Try different selectors for listing cards
+            cards = response.css('[data-test="property-card"]')
+            if not cards:
+                cards = response.css('.property-card')
+            if not cards:
+                cards = response.css('.list-card_for-rent')
+            if not cards:
+                cards = response.css('article')
+            if not cards:
+                cards = response.css('.list-card')
+
+            if cards:
+                logging.info(f"Zillow: Found {len(cards)} cards with primary selectors")
+            else:
+                # FALLBACK: Try parsing from Markdown/Raw Text
+                import re
+                try:
+                    full_text = response.get_all_text(separator="\n")
+                except:
+                    # If it's a raw Markdown string, .get_all_text() might fail
+                    full_text = str(response)
+                
+                # Split by likely separators: price patterns, horizontal lines, or multiple newlines
+                potential_listings = re.split(r'\n(?=\$\d{1,3}(?:,\d{3})*)|\n---\n', full_text)
+                if len(potential_listings) > 1:
+                    logging.info(f"Zillow: Using text-fallback parsing for {len(potential_listings)} items")
+                    for text_item in potential_listings:
+                        if ('$' not in text_item and 'sqft' not in text_item) or len(text_item) < 100: continue
+                        listings.append(self._parse_zillow_text_item(text_item))
+                    return listings
+
+            for card in cards:
+                # Link
+                url = (card.css('a[data-test="property-card-link"]::attr(href)').get() or 
+                       card.css('a::attr(href)').get())
+                if not url:
+                    logging.debug(f"Zillow: Card skipped, no URL found. Text: {card.get_all_text()[:50]}")
+                    continue
+                
+                if url.startswith('/'):
+                    url = "https://www.zillow.com" + url
+ 
+                # Aggregate card text for robust parsing
+                card_text = card.get_all_text(separator=" | ")
+                
+                # Robust Source ID extraction
+                import re
+                source_id = ""
+                zpid_match = re.search(r'(\d+)_zpid', url)
+                if zpid_match:
+                    source_id = zpid_match.group(1)
+                else:
+                    parts = [p for p in url.split('/') if p]
+                    if parts:
+                        source_id = parts[-1]
+                
+                if not source_id or source_id == "homedetails":
+                    import hashlib
+                    source_id = hashlib.md5(url.encode()).hexdigest()[:10]
+
+                # Regex Fallbacks for Price, Beds, Baths, Sqft
+                # Search in the full card text
+                full_text = card.get_all_text(separator=" ").lower()
+                
+                price_match = re.search(r'\$(\d{1,3}(?:,\d{3})*(?:\+)?(?:\/mo)?)', full_text)
+                price_str = price_match.group(1) if price_match else None
+                
+                # Beds: look for "1 bd", "Studio", "2 beds", "1bd"
+                # More specific than \d+ to avoid capturing years or addresses
+                beds_match = re.search(r'(\d+|\b(?:studio)\b)\s*(?:bd|beds?|bedroom)(?:\+)?', full_text, re.I)
+                if not beds_match:
+                    # Try studio without bd suffix
+                    beds_match = re.search(r'\b(studio)\b', full_text, re.I)
+                
+                beds_val = beds_match.group(1) if beds_match else None
+                if beds_val and beds_val.lower() == 'studio':
+                    beds = 0.0
+                else:
+                    try:
+                        beds = float(beds_val) if beds_val else None
+                    except:
+                        beds = None
+                
+                # Baths: look for "1 ba", "1.5 baths", "2 bathrooms", "1ba", "1 bath"
+                baths_match = re.search(r'([\d.]+)\s*(?:ba|baths?|bathrooms?)', full_text, re.I)
+                if not baths_match:
+                    # Try a broader search in all text if the primary separator split it
+                    baths_match = re.search(r'([\d.]+)\s*(?:ba|baths?|bathrooms?)', card.get_all_text(), re.I)
+                
+                try:
+                    baths = float(baths_match.group(1)) if baths_match else None
+                except:
+                    baths = None
+                
+                # Sqft: look for "1,200 sqft", "500 sq ft", "1200sgft", "1,200 sf", "square feet"
+                sqft_match = re.search(r'([\d,.]+)\s*(?:sqft|sq\s*ft|square\s*feet|sf)', full_text, re.I)
+                if not sqft_match:
+                    sqft_match = re.search(r'([\d,.]+)\s*(?:sqft|sq\s*ft|square\s*feet|sf)', card.get_all_text(), re.I)
+
+                try:
+                    if sqft_match:
+                        sqft_val = sqft_match.group(1).replace(',', '')
+                        # Handle case like "1.2k sqft" if it ever appears, but mostly just float/int
+                        sqft = int(float(sqft_val))
+                    else:
+                        sqft = None
+                except:
+                    sqft = None
+
+                # Double extraction for sqft if still None
+                if sqft is None:
+                    sqft_text = card.attrib.get('title') or ""
+                    sqft_match = re.search(r'([\d,]{3,})\s*(?:sqft|sq\s*ft)', sqft_text, re.I)
+                    if not sqft_match:
+                        # Try all text again with a more aggressive regex
+                        all_text = card.get_all_text()
+                        sqft_match = re.search(r'([\d,]+)\s*(?:sqft|sq\s*ft|square\s*feet)', all_text, re.I)
+                    
+                    if sqft_match:
+                        try:
+                            sqft = int(sqft_match.group(1).replace(',', ''))
+                        except:
+                            pass
+
+                # Address Fallback
+                raw_address = (card.css('address::text').get() or 
+                               card.css('[data-test="property-card-addr"]::text').get() or
+                               card.css('.property-card-address::text').get())
+                if not raw_address:
+                    addr_match = re.search(r'\|\s*([^|]{10,100})', card_text)
+                    raw_address = addr_match.group(1).strip() if addr_match else "Unknown Address"
+
+                # Description Fallback
+                description = (card.css('.property-card-subtitle::text').get() or 
+                               card.css('[data-test="property-card-subtitle"]::text').get() or
+                               "")
+                if not description:
+                    # Take a longer snippet of the card text as description
+                    description = card_text.replace("|", " ").strip()[:500]
+
+                listing = {
+                    'source': 'zillow',
+                    'source_id': source_id,
+                    'canonical_url': url,
+                    'raw_address': raw_address,
+                    'price': price_str,
+                    'beds': beds,
+                    'baths': baths,
+                    'sqft': sqft,
+                    'description': description,
+                    'extra_metadata': {
+                        'is_zillow_owned': card.css('.zillow-owned-badge').get() is not None,
+                        'badge_text': card.css('.property-card-badge::text').get()
+                    }
+                }
+                
+                listing['price'] = self._clean_price(listing['price'])
+                
+                # Extract city, state, zip
+                listing['city'], listing['state'], listing['zip'] = parse_address(listing['raw_address'])
+                
+                # Extract property type
+                listing['property_type'] = extract_property_type(listing['canonical_url'], listing['description'])
+                
+                # Final refinement: if beds/baths/sqft are missing, try regex on description
+                desc_text = listing['description'].lower()
+                if listing['beds'] is None:
+                    m = re.search(r'(\d+|studio)\s*(?:bd|beds?|bedroom)', desc_text)
+                    if m: listing['beds'] = 0.0 if m.group(1) == 'studio' else float(m.group(1))
+                if listing['baths'] is None:
+                    m = re.search(r'([\d.]+)\s*(?:ba|baths?|bathrooms?)', desc_text)
+                    if m: listing['baths'] = float(m.group(1))
+                if listing['sqft'] is None:
+                    m = re.search(r'([\d,]+)\s*(?:sqft|sq\s*ft)', desc_text)
+                    if m: listing['sqft'] = int(m.group(1).replace(',', ''))
+
+                # Final Address Refinement for State/Zip
+                if not listing['state'] or not listing['zip']:
+                    # Try parsing from both raw_address and description
+                    full_addr_test = f"{listing['raw_address']} {listing['description']}"
+                    _, state, zip_c = parse_address(full_addr_test)
+                    if not listing['state']: listing['state'] = state
+                    if not listing['zip']: listing['zip'] = zip_c
+
+                logging.info(f"Parsed Zillow: ID={listing['source_id']} | Price={listing['price']} | Beds={listing['beds']} | Baths={listing['baths']} | Addr={listing['raw_address'][:30]}...")
+                listings.append(listing)
+        except Exception as e:
+            logging.error(f"Error parsing Zillow response: {e}")
+            
+        return listings
+
+    def parse_detail(self, response) -> dict:
+        """Parses a Zillow detail page for missing specs."""
+        text = response.get_all_text(separator=" | ")
+        full_text = text.lower()
+        
+        # Specs regex
+        beds_match = re.search(r'(\d+|\b(?:studio)\b)\s*(?:bd|beds?|bedroom)', full_text, re.I)
+        baths_match = re.search(r'([\d.]+)\s*(?:ba|baths?|bathrooms?)', full_text, re.I)
+        sqft_match = re.search(r'([\d,.]+)\s*(?:sqft|sq\s*ft|square\s*feet|sf)', full_text, re.I)
+        
+        beds = None
+        if beds_match:
+            beds = 0.0 if beds_match.group(1).lower() == 'studio' else float(beds_match.group(1))
+        
+        baths = float(baths_match.group(1)) if baths_match else None
+        
+        sqft = None
+        if sqft_match:
+            try:
+                sqft = int(float(sqft_match.group(1).replace(',', '')))
+            except: pass
+
+        # Description
+        desc_selectors = ['[data-test="ds-overview"]', '.ds-overview', '.property-description']
+        description = ""
+        for s in desc_selectors:
+            found = response.css(f"{s}::text").get()
+            if found:
+                description = found
+                break
+        
+        if not description:
+            # Look for large blocks of text
+            description = text[:1000]
+
+        return {
+            'beds': beds,
+            'baths': baths,
+            'sqft': sqft,
+            'description': description
+        }
+
+    def _parse_zillow_text_item(self, text: str):
+        """Helper to parse a single listing from a text/markdown chunk."""
+        import re
+        import hashlib
+        
+        # Link extraction from markdown [text](url)
+        link_match = re.search(r'\[.*?\]\((https://www\.zillow\.com/.*?)\)', text)
+        url = link_match.group(1) if link_match else ""
+        
+        # Price
+        price_match = re.search(r'\$(\d{1,3}(?:,\d{3})*(?:\+)?(?:\/mo)?)', text)
+        price_str = price_match.group(1) if price_match else None
+        
+        # Specs
+        beds_match = re.search(r'(\b\d+|\b(?:studio)\b)\s*(?:bd|beds?|bedroom)(?:\+)?', text, re.I)
+        if not beds_match:
+            beds_match = re.search(r'\b(studio)\b', text, re.I)
+        
+        beds_val = beds_match.group(1) if beds_match else None
+        if beds_val and str(beds_val).lower() == 'studio':
+            beds = 0.0
+        else:
+            try:
+                beds = float(beds_val) if beds_val else None
+            except:
+                beds = None
+        
+        baths_match = re.search(r'([\d.]+)\s*(?:ba|baths?|bathrooms?)', text, re.I)
+        try:
+            baths = float(baths_match.group(1)) if baths_match else None
+        except:
+            baths = None
+        
+        sqft_match = re.search(r'([\d,.]+)\s*(?:sqft|sq\s*ft|square\s*feet|sf)', text, re.I)
+        try:
+            if sqft_match:
+                sqft_val = sqft_match.group(1).replace(',', '')
+                sqft = int(float(sqft_val))
+            else:
+                sqft = None
+        except:
+            sqft = None
+        
+        # Address extraction
+        raw_address = ""
+        # 1. Try markdown link text
+        link_text_match = re.search(r'\[(.*?)\]\(https://www\.zillow\.com', text)
+        if link_text_match:
+            raw_address = link_text_match.group(1).strip()
+
+        # 2. If empty or looks like a price/junk, try lines
+        if not raw_address or '$' in raw_address or len(raw_address) < 5 or 'Zillow' in raw_address:
+            lines = [l.strip() for l in text.split('\n') if l.strip()]
+            for line in lines:
+                # Basic address-like check
+                if '$' not in line and not line.startswith('http') and len(line) > 5 and 'Title:' not in line:
+                    raw_address = line.replace('###', '').strip()
+                    break
+        
+        if not raw_address: raw_address = "Unknown Address"
+
+        source_id = ""
+        if url:
+            zpid_match = re.search(r'(\d+)_zpid', url)
+            source_id = zpid_match.group(1) if zpid_match else url.split('/')[-1]
+        
+        if not source_id:
+            source_id = hashlib.md5(text.encode()).hexdigest()[:10]
+
+        listing = {
+            'source': 'zillow',
+            'source_id': source_id,
+            'canonical_url': url or "https://www.zillow.com",
+            'raw_address': raw_address,
+            'price': self._clean_price(price_str),
+            'beds': beds,
+            'baths': baths,
+            'sqft': sqft,
+            'description': text[:200].replace('\n', ' '),
+            'extra_metadata': {'parsed_from': 'text_fallback'}
+        }
+        
+        # Extract city, state, zip
+        listing['city'], listing['state'], listing['zip'] = parse_address(listing['raw_address'])
+        
+        # Address Refinement
+        if not listing['state'] or not listing['zip']:
+            full_addr_test = f"{listing['raw_address']} {text}"
+            _, state, zip_c = parse_address(full_addr_test)
+            if not listing['state']: listing['state'] = state
+            if not listing['zip']: listing['zip'] = zip_c
+            
+        # Extract property type
+        listing['property_type'] = extract_property_type(listing['canonical_url'], text)
+        
+        logging.info(f"Text-Parsed Zillow: ID={listing['source_id']} | Price={listing['price']} | Beds={listing['beds']} | Addr={listing['raw_address'][:30]}...")
+        return listing
+
+@ScraperRegistry.register("redfin")
+class RedfinScraper(BaseScraper):
+    """
+    Scraper for Redfin rental listings.
+    Note: Redfin's search results can also be fetched via their Map API for bulk data.
+    """
+    def __init__(self):
+        super().__init__("redfin")
+
+    def parse(self, response):
+        listings = []
+        try:
+            card_selectors = ['.HomeCardContainer', '.bottomV2', 'article', '.v2-home-card', '[data-test="property-card"]']
+            cards = []
+            for s in card_selectors:
+                cards = response.css(s)
+                if cards:
+                    logging.info(f"Redfin: Found {len(cards)} cards with selector '{s}'")
+                    break
+
+            if not cards:
+                # FALLBACK: Try parsing from Markdown/Raw Text
+                import re
+                try:
+                    full_text = response.get_all_text(separator="\n")
+                except:
+                    full_text = str(response)
+                
+                # Redfin listings in Markdown often split by price, horizontal lines, or address-looking headers
+                potential_listings = re.split(r'\n(?=\$\d{1,3}(?:,\d{3})*)|\n---\n', full_text)
+                if len(potential_listings) > 1:
+                    logging.info(f"Redfin: Using text-fallback parsing for {len(potential_listings)} items")
+                    for text_item in potential_listings:
+                        if ('$' not in text_item and 'sqft' not in text_item) or len(text_item) < 100: continue
+                        listings.append(self._parse_redfin_text_item(text_item))
+                    return listings
+
+            for card in cards:
+                url_path = card.css('a::attr(href)').get()
+                if not url_path: continue
+                
+                url = "https://www.redfin.com" + url_path
+                card_text = card.get_all_text(separator=" | ")
+                
+                # Redfin Source ID
+                import re
+                source_id = ""
+                id_match = re.search(r'/home/(\d+)$', url_path)
+                if id_match:
+                    source_id = id_match.group(1)
+                else:
+                    parts = [p for p in url_path.split('/') if p]
+                    source_id = parts[-1] if parts else ""
+                
+                if not source_id:
+                    import hashlib
+                    source_id = hashlib.md5(url.encode()).hexdigest()[:10]
+
+                # Regex Fallbacks
+                price_str = card.css('[data-test="property-card-price"]::text').get() or card.css('.property-card-price::text').get()
+                beds = self._parse_numeric(card.css('.property-card-common-info::text').re_first(r'(\d+)\s*bd'))
+                baths = self._parse_numeric(card.css('.property-card-common-info::text').re_first(r'(\d+(?:\.\d+)?)\s*ba'))
+                sqft = self._parse_numeric(card.css('.property-card-common-info::text').re_first(r'(\d+(?:,\d+)?)\s*sqft'))
+
+                # Fallback to regex if data-test selectors didn't work
+                if not price_str:
+                    price_match = re.search(r'\$(\d{1,3}(?:,\d{3})*(?:\+)?(?:\/mo)?)', card_text)
+                    price_str = price_match.group(1) if price_match else None
+                
+                if beds is None:
+                    beds_match = re.search(r'(\d+|Studio)\s*(?:bd|beds?|bedroom)', card_text, re.I)
+                    beds_val = beds_match.group(1) if beds_match else "0"
+                    beds = 0 if str(beds_val).lower() == 'studio' else float(beds_val) if beds_val.replace('.','',1).isdigit() else 0
+                
+                if baths is None:
+                    baths_match = re.search(r'([\d.]+)\s*(?:ba|baths?|bathrooms?)', card_text, re.I)
+                    baths = float(baths_match.group(1)) if (baths_match and baths_match.group(1).replace('.','',1).isdigit()) else 0
+                
+                if sqft is None:
+                    sqft_match = re.search(r'([\d,]+)\s*(?:sqft|sq\s*ft)', card_text, re.I)
+                    sqft_val = sqft_match.group(1).replace(',', '') if sqft_match else None
+                    sqft = int(sqft_val) if sqft_val and sqft_val.isdigit() else None
+
+                # Double extraction for sqft
+                if sqft is None:
+                    all_text = card.get_all_text()
+                    sqft_match = re.search(r'([\d,]+)\s*(?:sqft|sq\s*ft|square\s*feet)', all_text, re.I)
+                    if sqft_match:
+                        try:
+                            sqft = int(sqft_match.group(1).replace(',', ''))
+                        except: pass
+
+                description = card.css('.remarks::text').get() or ""
+                if not description:
+                    description = card_text.replace("|", " ").strip()[:100]
+
+                listing = {
+                    'source': 'redfin',
+                    'source_id': source_id,
+                    'canonical_url': url,
+                    'raw_address': (card.css('[data-test="property-card-addr"]::text').get() or 
+                                   card.css('.property-card-addr::text').get() or
+                                   card.css('.homeAddress::text').get() or 
+                                   card.css('[data-test-name="address"]::text').get() or
+                                   card.css('.address::text').get() or
+                                   card.css('.home-address::text').get() or "Unknown Address"),
+                    'price': price_str,
+                    'beds': beds,
+                    'baths': baths,
+                    'sqft': sqft,
+                    'description': description,
+                    'extra_metadata': {
+                        'listing_remarks': card.css('.remarks::text').get()
+                    }
+                }
+                
+                listing['price'] = self._clean_price(listing['price'])
+                
+                # Extract city, state, zip
+                listing['city'], listing['state'], listing['zip'] = parse_address(listing['raw_address'])
+                
+                # Extract property type
+                listing['property_type'] = extract_property_type(listing['canonical_url'], listing['description'])
+                
+                logging.info(f"Parsed Redfin: ID={listing['source_id']} | Price={listing['price']} | Beds={listing['beds']} | Baths={listing['baths']} | Addr={listing['raw_address'][:30]}...")
+                listings.append(listing)
+        except Exception as e:
+            logging.error(f"Error parsing Redfin response: {e}")
+            
+        return listings
+
+    def parse_detail(self, response) -> dict:
+        """Parses a Redfin detail page for missing specs."""
+        text = response.get_all_text(separator=" | ")
+        full_text = text.lower()
+        
+        beds_match = re.search(r'(\d+|Studio)\s*(?:bd|beds?|bedroom)', full_text, re.I)
+        baths_match = re.search(r'([\d.]+)\s*(?:ba|baths?|bathrooms?)', full_text, re.I)
+        sqft_match = re.search(r'([\d,.]+)\s*(?:sqft|sq\s*ft|square\s*feet|sf)', full_text, re.I)
+        
+        beds = None
+        if beds_match:
+            beds = 0.0 if beds_match.group(1).lower() == 'studio' else float(beds_match.group(1))
+            
+        baths = float(baths_match.group(1)) if baths_match else None
+        
+        sqft = None
+        if sqft_match:
+            try:
+                sqft = int(float(sqft_match.group(1).replace(',', '')))
+            except: pass
+
+        description = response.css('.remarks::text').get() or text[:500]
+
+        return {
+            'beds': beds,
+            'baths': baths,
+            'sqft': sqft,
+            'description': description
+        }
+
+    def _parse_redfin_text_item(self, text: str):
+        """Helper to parse a single Redfin listing from a text/markdown chunk."""
+        import re
+        import hashlib
+        
+        # Link extraction from markdown [text](url)
+        link_match = re.search(r'\[.*?\]\((https://www\.redfin\.com/.*?)\)', text)
+        url = link_match.group(1) if link_match else ""
+        
+        # Price
+        price_match = re.search(r'\$(\d{1,3}(?:,\d{3})*(?:\+)?(?:\/mo)?)', text)
+        price_str = price_match.group(1) if price_match else None
+        
+        # Specs
+        beds_match = re.search(r'(\d+|Studio)\s*(?:bd|beds?|bedroom)', text, re.I)
+        beds_val = beds_match.group(1) if beds_match else None
+        if beds_val and str(beds_val).lower() == 'studio':
+            beds = 0
+        else:
+            try:
+                beds = float(beds_val) if beds_val else None
+            except:
+                beds = None
+        
+        baths_match = re.search(r'([\d.]+)\s*(?:ba|baths?|bathrooms?)', text, re.I)
+        try:
+            baths = float(baths_match.group(1)) if (baths_match and baths_match.group(1).replace('.','',1).isdigit()) else None
+        except:
+            baths = None
+        
+        sqft_match = re.search(r'([\d,]+)\s*(?:sqft|sq\s*ft)', text, re.I)
+        sqft = int(sqft_match.group(1).replace(',', '')) if (sqft_match and sqft_match.group(1).replace(',', '').isdigit()) else None
+        
+        # Double extraction for sqft
+        if sqft is None:
+            sqft_context = re.search(r'(?:size|space|area)[:\s]*([\d,]+)\s*(?:sqft|sq\s*ft|square\s*feet)', text, re.I)
+            if sqft_context:
+                try:
+                    sqft = int(sqft_context.group(1).replace(',', ''))
+                except: pass
+        
+        # Address extraction
+        raw_address = ""
+        # 1. Try markdown link text
+        link_text_match = re.search(r'\[(.*?)\]\(https://www\.redfin\.com', text)
+        if link_text_match:
+            raw_address = link_text_match.group(1).strip()
+
+        # 2. If empty or looks like a price/junk, try lines
+        if not raw_address or '$' in raw_address or len(raw_address) < 5 or 'Redfin' in raw_address:
+            lines = [l.strip() for l in text.split('\n') if l.strip()]
+            for line in lines:
+                if '$' not in line and not line.startswith('http') and len(line) > 5 and 'Title:' not in line:
+                    raw_address = line.replace('###', '').strip()
+                    break
+        
+        if not raw_address: raw_address = "Unknown Address"
+
+        source_id = ""
+        if url:
+            id_match = re.search(r'/home/(\d+)$', url)
+            source_id = id_match.group(1) if id_match else url.split('/')[-1]
+            
+        if not source_id:
+            source_id = hashlib.md5(text.encode()).hexdigest()[:10]
+
+        listing = {
+            'source': 'redfin',
+            'source_id': source_id,
+            'canonical_url': url or "https://www.redfin.com",
+            'raw_address': raw_address,
+            'price': self._clean_price(price_str),
+            'beds': beds,
+            'baths': baths,
+            'sqft': sqft,
+            'description': text[:200].replace('\n', ' '),
+            'extra_metadata': {'parsed_from': 'text_fallback'}
+        }
+        
+        # Extract city, state, zip
+        listing['city'], listing['state'], listing['zip'] = parse_address(listing['raw_address'])
+        
+        # Extract property type
+        listing['property_type'] = extract_property_type(listing['canonical_url'], text)
+        
+        logging.info(f"Text-Parsed Redfin: ID={listing['source_id']} | Price={listing['price']} | Beds={listing['beds']} | Addr={listing['raw_address'][:30]}...")
+        return listing
