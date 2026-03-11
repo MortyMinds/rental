@@ -27,6 +27,11 @@ const typeOptions = [
   { label: 'Apartment', value: 'apartment', icon: Building },
 ];
 
+const platformOptions = [
+  { label: 'Zillow', value: 'zillow' },
+  { label: 'Redfin', value: 'redfin' },
+];
+
 function App() {
   const [rentals, setRentals] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -39,6 +44,7 @@ function App() {
   const [city, setCity] = useState('');
   const [zip, setZip] = useState('');
   const [propertyType, setPropertyType] = useState([]);
+  const [selectedPlatforms, setSelectedPlatforms] = useState([]);
 
   const fetchRentals = async () => {
     setLoading(true);
@@ -52,6 +58,9 @@ function App() {
       if (zip) params.append('zip', zip);
       if (propertyType && propertyType.length > 0) {
         propertyType.forEach(pt => params.append('property_type', pt));
+      }
+      if (selectedPlatforms && selectedPlatforms.length > 0) {
+        selectedPlatforms.forEach(p => params.append('source', p));
       }
 
       const baseUrl = import.meta.env.DEV ? 'http://localhost:8123' : '';
@@ -85,6 +94,7 @@ function App() {
     setCity('');
     setZip('');
     setPropertyType([]);
+    setSelectedPlatforms([]);
   };
 
   return (
@@ -103,10 +113,56 @@ function App() {
 
             {/* Filter Buttons Navigation */}
             <div className="flex flex-wrap items-center gap-3">
-              <div className="flex bg-[#0b0e17] border border-[#1d2335] rounded-xl px-4 py-2 text-sm text-slate-300 font-bold w-max max-w-full hidden md:flex items-center gap-2">
-                <span className="text-slate-500 font-normal">Locations: </span>
-                {zip || city || 'All Area'}
-              </div>
+              {/* Platforms Popover */}
+              <Popover className="relative">
+                {({ open }) => (
+                  <>
+                    <Popover.Button className={`flex items-center gap-2 px-5 py-2.5 rounded-xl border font-bold text-sm transition-all focus:outline-none ${selectedPlatforms.length > 0 || open
+                      ? 'bg-[#09292a] border-teal-600/50 text-teal-400'
+                      : 'bg-[#0b0e17] border-[#1d2335] text-slate-200 hover:border-slate-500 hover:bg-[#121622]'
+                      }`}>
+                      Platforms
+                      <ChevronDown size={14} className={`transition-transform duration-200 ${open ? 'rotate-180' : ''}`} />
+                    </Popover.Button>
+                    <Popover.Panel transition className="absolute z-50 mt-2 w-64 bg-[#10141e] border border-[#1d2335] rounded-xl shadow-2xl p-6 transition duration-200 ease-out data-[closed]:-translate-y-1 data-[closed]:opacity-0 data-[closed]:scale-95">
+                      <div className="flex flex-col gap-4">
+                        <label className="text-[13px] font-bold text-slate-200">Select Sources</label>
+                        <div className="flex flex-col gap-2">
+                          {platformOptions.map((opt) => (
+                            <label key={opt.value} className="flex items-center gap-3 cursor-pointer group p-2 hover:bg-[#161b26] rounded-lg transition-colors">
+                              <input
+                                type="checkbox"
+                                checked={selectedPlatforms.includes(opt.value)}
+                                onChange={() => {
+                                  if (selectedPlatforms.includes(opt.value)) {
+                                    setSelectedPlatforms(selectedPlatforms.filter(p => p !== opt.value));
+                                  } else {
+                                    setSelectedPlatforms([...selectedPlatforms, opt.value]);
+                                  }
+                                }}
+                                className="w-4 h-4 rounded border-[#1d2335] text-teal-500 focus:ring-teal-500 bg-[#0b0e17]"
+                              />
+                              <span className="text-sm font-medium text-slate-300 group-hover:text-white transition-colors">{opt.label}</span>
+                            </label>
+                          ))}
+                        </div>
+                        <div className="flex justify-end gap-3 mt-2 border-t border-[#1d2335] pt-4">
+                          <button
+                            type="button"
+                            onClick={() => setSelectedPlatforms([])}
+                            className="text-sm font-bold text-teal-500 hover:text-teal-400"
+                          >
+                            Reset
+                          </button>
+                          <Popover.Button className="px-6 py-2 bg-[#e93d56] hover:bg-[#d4354c] text-white rounded-lg transition-all font-bold text-sm">
+                            Done
+                          </Popover.Button>
+                        </div>
+                      </div>
+                    </Popover.Panel>
+                  </>
+                )}
+              </Popover>
 
               {/* Price Popover */}
               <Popover className="relative">
