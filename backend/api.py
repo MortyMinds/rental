@@ -23,6 +23,8 @@ def get_rentals(
     max_price: Optional[int] = Query(None),
     min_beds: Optional[float] = Query(None),
     min_baths: Optional[float] = Query(None),
+    min_sqft: Optional[int] = Query(None),
+    max_sqft: Optional[int] = Query(None),
     city: Optional[str] = Query(None),
     zip: Optional[str] = Query(None),
     property_type: Optional[List[str]] = Query(None),
@@ -47,6 +49,12 @@ def get_rentals(
         if min_baths is not None:
             query += " AND baths >= ?"
             params.append(min_baths)
+        if min_sqft is not None:
+            query += " AND sqft >= ?"
+            params.append(min_sqft)
+        if max_sqft is not None:
+            query += " AND sqft <= ?"
+            params.append(max_sqft)
         if city:
             query += " AND LOWER(city) LIKE ?"
             params.append(f"%{city.lower()}%")

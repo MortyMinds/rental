@@ -41,6 +41,8 @@ function App() {
   const [maxPrice, setMaxPrice] = useState('');
   const [minBeds, setMinBeds] = useState('');
   const [minBaths, setMinBaths] = useState('');
+  const [minSqft, setMinSqft] = useState('');
+  const [maxSqft, setMaxSqft] = useState('');
   const [city, setCity] = useState('');
   const [zip, setZip] = useState('');
   const [propertyType, setPropertyType] = useState([]);
@@ -54,6 +56,8 @@ function App() {
       if (maxPrice) params.append('max_price', maxPrice);
       if (minBeds) params.append('min_beds', minBeds);
       if (minBaths) params.append('min_baths', minBaths);
+      if (minSqft) params.append('min_sqft', minSqft);
+      if (maxSqft) params.append('max_sqft', maxSqft);
       if (city) params.append('city', city);
       if (zip) params.append('zip', zip);
       if (propertyType && propertyType.length > 0) {
@@ -91,6 +95,8 @@ function App() {
     setMaxPrice('');
     setMinBeds('');
     setMinBaths('');
+    setMinSqft('');
+    setMaxSqft('');
     setCity('');
     setZip('');
     setPropertyType([]);
@@ -199,6 +205,55 @@ function App() {
                           <button
                             type="button"
                             onClick={() => { setMinPrice(''); setMaxPrice(''); }}
+                            className="text-sm font-bold text-teal-500 hover:text-teal-400"
+                          >
+                            Reset
+                          </button>
+                          <Popover.Button className="px-6 py-2 bg-[#e93d56] hover:bg-[#d4354c] text-white rounded-lg transition-all font-bold text-sm">
+                            Done
+                          </Popover.Button>
+                        </div>
+                      </div>
+                    </Popover.Panel>
+                  </>
+                )}
+              </Popover>
+
+              {/* Sqft Popover */}
+              <Popover className="relative">
+                {({ open }) => (
+                  <>
+                    <Popover.Button className={`flex items-center gap-2 px-5 py-2.5 rounded-xl border font-bold text-sm transition-all focus:outline-none ${minSqft || maxSqft || open
+                      ? 'bg-[#09292a] border-teal-600/50 text-teal-400'
+                      : 'bg-[#0b0e17] border-[#1d2335] text-slate-200 hover:border-slate-500 hover:bg-[#121622]'
+                      }`}>
+                      Sqft
+                      <ChevronDown size={14} className={`transition-transform duration-200 ${open ? 'rotate-180' : ''}`} />
+                    </Popover.Button>
+                    <Popover.Panel transition className="absolute z-50 mt-2 w-80 bg-[#10141e] border border-[#1d2335] rounded-xl shadow-2xl p-6 transition duration-200 ease-out data-[closed]:-translate-y-1 data-[closed]:opacity-0 data-[closed]:scale-95">
+                      <div className="flex flex-col gap-4">
+                        <label className="text-[13px] font-bold text-slate-200">Square Feet</label>
+                        <div className="flex items-center gap-3">
+                          <input
+                            type="number"
+                            value={minSqft}
+                            onChange={e => setMinSqft(e.target.value)}
+                            placeholder="Min"
+                            className="w-full bg-[#0b0e17] border border-[#1d2335] text-slate-200 rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:border-teal-500/50"
+                          />
+                          <span className="text-slate-500">-</span>
+                          <input
+                            type="number"
+                            value={maxSqft}
+                            onChange={e => setMaxSqft(e.target.value)}
+                            placeholder="Max"
+                            className="w-full bg-[#0b0e17] border border-[#1d2335] text-slate-200 rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:border-teal-500/50"
+                          />
+                        </div>
+                        <div className="flex justify-end gap-3 mt-2 border-t border-[#1d2335] pt-4">
+                          <button
+                            type="button"
+                            onClick={() => { setMinSqft(''); setMaxSqft(''); }}
                             className="text-sm font-bold text-teal-500 hover:text-teal-400"
                           >
                             Reset
