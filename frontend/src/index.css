@@ -1,0 +1,27 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-slate-950 text-slate-50 min-h-screen text-base;
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  }
+}
+
+@layer components {
+  .btn-primary {
+    @apply px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg transition-colors font-medium shadow-lg shadow-indigo-600/20 active:scale-95;
+  }
+  .glass-panel {
+    @apply bg-slate-900/50 backdrop-blur-md border border-slate-800 rounded-2xl shadow-xl;
+  }
+}
+
+/* Transitions */
+.ui-popover-enter { transition: all 200ms cubic-bezier(0.4, 0, 0.2, 1); }
+.ui-popover-enter-from { opacity: 0; transform: translateY(-4px) scale(0.95); }
+.ui-popover-enter-to { opacity: 1; transform: translateY(0) scale(1); }
+.ui-popover-leave { transition: all 150ms cubic-bezier(0.4, 0, 0.2, 1); }
+.ui-popover-leave-from { opacity: 1; transform: translateY(0) scale(1); }
+.ui-popover-leave-to { opacity: 0; transform: translateY(-4px) scale(0.95); }

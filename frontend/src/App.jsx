@@ -1,0 +1,409 @@
+import { useState, useEffect } from 'react';
+import { Search, BedDouble, Bath, MapPin, ExternalLink, Home, Building, ChevronDown } from 'lucide-react';
+import { Popover } from '@headlessui/react';
+
+const bedOptions = [
+  { label: 'Any', value: '' },
+  { label: 'Studio', value: '0' },
+  { label: '1', value: '1' },
+  { label: '2', value: '2' },
+  { label: '3', value: '3' },
+  { label: '4', value: '4' },
+  { label: '5+', value: '5' },
+];
+
+const bathOptions = [
+  { label: 'Any', value: '' },
+  { label: '1+', value: '1' },
+  { label: '1.5+', value: '1.5' },
+  { label: '2+', value: '2' },
+  { label: '2.5+', value: '2.5' },
+  { label: '3+', value: '3' },
+  { label: '4+', value: '4' },
+];
+
+const typeOptions = [
+  { label: 'House', value: 'house', icon: Home },
+  { label: 'Apartment', value: 'apartment', icon: Building },
+];
+
+function App() {
+  const [rentals, setRentals] = useState([]);
+  const [loading, setLoading] = useState(false);
+  
+  // Filters
+  const [minPrice, setMinPrice] = useState('');
+  const [maxPrice, setMaxPrice] = useState('');
+  const [minBeds, setMinBeds] = useState('');
+  const [minBaths, setMinBaths] = useState('');
+  const [city, setCity] = useState('');
+  const [zip, setZip] = useState('');
+  const [propertyType, setPropertyType] = useState([]);
+
+  const fetchRentals = async () => {
+    setLoading(true);
+    try {
+      const params = new URLSearchParams();
+      if (minPrice) params.append('min_price', minPrice);
+      if (maxPrice) params.append('max_price', maxPrice);
+      if (minBeds) params.append('min_beds', minBeds);
+      if (minBaths) params.append('min_baths', minBaths);
+      if (city) params.append('city', city);
+      if (zip) params.append('zip', zip);
+      if (propertyType && propertyType.length > 0) {
+        propertyType.forEach(pt => params.append('property_type', pt));
+      }
+
+      const baseUrl = import.meta.env.DEV ? 'http://localhost:8123' : '';
+      const response = await fetch(`${baseUrl}/api/rentals?${params.toString()}`);
+      if (response.ok) {
+        setRentals(await response.json());
+      } else {
+        console.error('Failed to fetch rentals');
+      }
+    } catch (err) {
+      console.error(err);
+    }
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    fetchRentals();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const handleSearch = (e) => {
+    e.preventDefault();
+    fetchRentals();
+  };
+
+  const handleReset = () => {
+    setMinPrice('');
+    setMaxPrice('');
+    setMinBeds('');
+    setMinBaths('');
+    setCity('');
+    setZip('');
+    setPropertyType([]);
+  };
+
+  return (
+    <div className="min-h-screen bg-[#070b14] font-sans relative pb-16">
+      <div className="max-w-[1400px] mx-auto px-6 pt-12">
+        <header className="mb-10 text-center">
+          <h1 className="text-4xl md:text-5xl font-extrabold text-[#f8fafc] tracking-tight mb-2">
+            IntelRentals
+          </h1>
+          <p className="text-slate-500">Your curated feed of high-quality properties.</p>
+        </header>
+
+        {/* Filter Form matches the dark form in screenshot */}
+        <form onSubmit={handleSearch} className="bg-[#10141e] border border-[#1d2335] rounded-2xl p-6 lg:p-8 mb-10 shadow-xl">
+          <div className="flex flex-col gap-8">
+            
+            {/* Filter Buttons Navigation */}
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="flex bg-[#0b0e17] border border-[#1d2335] rounded-xl px-4 py-2 text-sm text-slate-300 font-bold w-max max-w-full hidden md:flex items-center gap-2">
+                <span className="text-slate-500 font-normal">Locations: </span>
+                {zip || city || 'All Area'}
+              </div>
+
+              {/* Price Popover */}
+              <Popover className="relative">
+                {({ open }) => (
+                  <>
+                    <Popover.Button className={`flex items-center gap-2 px-5 py-2.5 rounded-xl border font-bold text-sm transition-all focus:outline-none ${
+                      minPrice || maxPrice || open
+                        ? 'bg-[#09292a] border-teal-600/50 text-teal-400'
+                        : 'bg-[#0b0e17] border-[#1d2335] text-slate-200 hover:border-slate-500 hover:bg-[#121622]'
+                    }`}>
+                      Price
+                      <ChevronDown size={14} className={`transition-transform duration-200 ${open ? 'rotate-180' : ''}`} />
+                    </Popover.Button>
+                    <Popover.Panel className="absolute z-50 mt-2 w-80 bg-[#10141e] border border-[#1d2335] rounded-xl shadow-2xl p-6 ui-popover-enter ui-popover-enter-from ui-popover-enter-to ui-popover-leave ui-popover-leave-from ui-popover-leave-to">
+                      <div className="flex flex-col gap-4">
+                        <label className="text-[13px] font-bold text-slate-200">Price Range</label>
+                        <div className="flex items-center gap-3">
+                          <input 
+                            type="number" 
+                            value={minPrice} 
+                            onChange={e => setMinPrice(e.target.value)} 
+                            placeholder="Min" 
+                            className="w-full bg-[#0b0e17] border border-[#1d2335] text-slate-200 rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:border-teal-500/50" 
+                          />
+                          <span className="text-slate-500">-</span>
+                          <input 
+                            type="number" 
+                            value={maxPrice} 
+                            onChange={e => setMaxPrice(e.target.value)} 
+                            placeholder="Max" 
+                            className="w-full bg-[#0b0e17] border border-[#1d2335] text-slate-200 rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:border-teal-500/50" 
+                          />
+                        </div>
+                        <div className="flex justify-end gap-3 mt-2 border-t border-[#1d2335] pt-4">
+                          <button 
+                            type="button" 
+                            onClick={() => { setMinPrice(''); setMaxPrice(''); }} 
+                            className="text-sm font-bold text-teal-500 hover:text-teal-400"
+                          >
+                            Reset
+                          </button>
+                          <Popover.Button className="px-6 py-2 bg-[#e93d56] hover:bg-[#d4354c] text-white rounded-lg transition-all font-bold text-sm">
+                            Done
+                          </Popover.Button>
+                        </div>
+                      </div>
+                    </Popover.Panel>
+                  </>
+                )}
+              </Popover>
+
+              {/* Beds/Baths Popover */}
+              <Popover className="relative">
+                {({ open }) => (
+                  <>
+                    <Popover.Button className={`flex items-center gap-2 px-5 py-2.5 rounded-xl border font-bold text-sm transition-all focus:outline-none ${
+                        minBeds || minBaths || open
+                        ? 'bg-[#09292a] border-teal-600/50 text-teal-400'
+                        : 'bg-[#0b0e17] border-[#1d2335] text-slate-200 hover:border-slate-500 hover:bg-[#121622]'
+                    }`}>
+                      Beds/baths
+                      <ChevronDown size={14} className={`transition-transform duration-200 ${open ? 'rotate-180' : ''}`} />
+                    </Popover.Button>
+                    <Popover.Panel className="absolute z-50 mt-2 w-[480px] -left-10 lg:left-0 bg-[#10141e] border border-[#1d2335] rounded-xl shadow-2xl p-6 ui-popover-enter ui-popover-enter-from ui-popover-enter-to ui-popover-leave ui-popover-leave-from ui-popover-leave-to">
+                       <div className="flex flex-col gap-6">
+                        <div className="flex flex-col gap-3">
+                          <label className="text-[15px] font-bold text-slate-200 flex items-baseline gap-2">
+                            Beds
+                          </label>
+                          <div className="flex items-center bg-[#0b0e17] border border-[#1d2335] rounded-xl p-1 overflow-x-auto overflow-y-hidden no-scrollbar">
+                            {bedOptions.map((opt, i) => {
+                              const isActive = minBeds === opt.value;
+                              return (
+                                <div key={opt.label} className="flex relative items-center">
+                                  <button 
+                                    type="button"
+                                    onClick={() => setMinBeds(opt.value)}
+                                    className={`px-4 sm:px-6 py-2 text-sm font-bold rounded-lg transition-all border ${
+                                      isActive 
+                                        ? 'bg-[#09292a] border-teal-600/50 text-teal-400' 
+                                        : 'border-transparent text-slate-300 hover:text-white'
+                                    }`}
+                                  >
+                                    {opt.label}
+                                  </button>
+                                  {i < bedOptions.length - 1 && (
+                                    <div className="w-[1px] h-4 bg-[#1d2335] mx-1" />
+                                  )}
+                                </div>
+                              )
+                            })}
+                          </div>
+                        </div>
+
+                        <div className="flex flex-col gap-3">
+                          <label className="text-[15px] font-bold text-slate-200 flex items-baseline gap-2">
+                            Baths
+                          </label>
+                          <div className="flex items-center bg-[#0b0e17] border border-[#1d2335] rounded-xl p-1 overflow-x-auto overflow-y-hidden no-scrollbar">
+                            {bathOptions.map((opt, i) => {
+                              const isActive = minBaths === opt.value;
+                              return (
+                                <div key={opt.label} className="flex relative items-center">
+                                  <button 
+                                    type="button"
+                                    onClick={() => setMinBaths(opt.value)}
+                                    className={`px-4 xl:px-6 py-2 text-sm font-bold rounded-lg transition-all border ${
+                                      isActive 
+                                        ? 'bg-[#09292a] border-teal-600/50 text-teal-400' 
+                                        : 'border-transparent text-slate-300 hover:text-white'
+                                    }`}
+                                  >
+                                    {opt.label}
+                                  </button>
+                                  {i < bathOptions.length - 1 && (
+                                    <div className="w-[1px] h-4 bg-[#1d2335] mx-1" />
+                                  )}
+                                </div>
+                              )
+                            })}
+                          </div>
+                        </div>
+                        
+                        <div className="flex justify-end gap-3 mt-2 border-t border-[#1d2335] pt-4">
+                          <button 
+                            type="button" 
+                            onClick={() => { setMinBeds(''); setMinBaths(''); }} 
+                            className="text-[15px] font-bold text-teal-500 hover:text-teal-400 mr-2"
+                          >
+                            Reset
+                          </button>
+                          <Popover.Button className="px-8 py-2.5 bg-[#e93d56] hover:bg-[#d4354c] text-white rounded-lg transition-all font-bold text-sm">
+                            Done
+                          </Popover.Button>
+                        </div>
+                      </div>
+                    </Popover.Panel>
+                  </>
+                )}
+              </Popover>
+
+              {/* Home Type Popover */}
+              <Popover className="relative">
+                 {({ open }) => (
+                  <>
+                    <Popover.Button className={`flex items-center gap-2 px-5 py-2.5 rounded-xl border font-bold text-sm transition-all focus:outline-none ${
+                        propertyType.length > 0 || open
+                        ? 'bg-[#09292a] border-teal-600/50 text-teal-400'
+                        : 'bg-[#0b0e17] border-[#1d2335] text-slate-200 hover:border-slate-500 hover:bg-[#121622]'
+                    }`}>
+                      Home type
+                      <ChevronDown size={14} className={`transition-transform duration-200 ${open ? 'rotate-180' : ''}`} />
+                    </Popover.Button>
+                    <Popover.Panel className="absolute z-50 mt-2 w-[340px] -left-10 lg:left-0 bg-[#10141e] border border-[#1d2335] rounded-xl shadow-2xl p-6 ui-popover-enter ui-popover-enter-from ui-popover-enter-to ui-popover-leave ui-popover-leave-from ui-popover-leave-to">
+                       <div className="flex flex-col gap-6">
+                         <div className="flex gap-4">
+                          {typeOptions.map((opt) => {
+                            const Icon = opt.icon;
+                            const isActive = propertyType.includes(opt.value);
+                            return (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (isActive) {
+                                    setPropertyType(propertyType.filter(pt => pt !== opt.value));
+                                  } else {
+                                    setPropertyType([...propertyType, opt.value]);
+                                  }
+                                }}
+                                key={opt.label}
+                                className={`flex flex-col items-center justify-center w-full aspect-square rounded-xl border transition-all ${
+                                  isActive
+                                    ? 'bg-[#092b2d] border-teal-600/60 text-teal-400'
+                                    : 'bg-[#0b0e17] border-[#1d2335] text-slate-300 hover:border-slate-500 hover:text-white'
+                                }`}
+                              >
+                                <Icon size={32} strokeWidth={isActive ? 2 : 1.5} className="mb-3" />
+                                <span className="text-[13px] font-bold">{opt.label}</span>
+                              </button>
+                            )
+                          })}
+                         </div>
+                         <div className="flex justify-end gap-3 mt-0 border-t border-[#1d2335] pt-4">
+                          <button 
+                            type="button" 
+                            onClick={() => { setPropertyType([]); }} 
+                            className="text-[15px] font-bold text-teal-500 hover:text-teal-400 mr-2"
+                          >
+                            Reset
+                          </button>
+                          <Popover.Button className="px-8 py-2.5 bg-[#e93d56] hover:bg-[#d4354c] text-white rounded-lg transition-all font-bold text-sm">
+                            Done
+                          </Popover.Button>
+                        </div>
+                       </div>
+                    </Popover.Panel>
+                  </>
+                )}
+              </Popover>
+              
+              <button 
+                type="submit" 
+                className="px-6 py-2.5 bg-[#e93d56] hover:bg-[#d4354c] text-white rounded-lg transition-all font-bold text-[15px] shadow-lg shadow-[#e93d56]/10 disabled:opacity-50 ml-auto" 
+                disabled={loading}
+              >
+                {loading ? 'Searching...' : 'Save search'}
+              </button>
+            </div>
+
+          </div>
+        </form>
+
+        <main>
+          {loading ? (
+            <div className="flex justify-center py-20">
+              <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-teal-500"></div>
+            </div>
+          ) : rentals.length === 0 ? (
+            <div className="text-center py-20 text-slate-500 bg-[#10141e] border border-[#1d2335] rounded-2xl">
+              <Search className="mx-auto h-12 w-12 text-slate-600 mb-4 opacity-50" />
+              <p className="text-lg font-medium text-slate-400">No rentals found matching your criteria.</p>
+              <p className="text-sm mt-1">Try adjusting your filters to see more results.</p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+              {rentals.map((rental) => (
+                <div key={`${rental.source}-${rental.source_id}`} className="bg-[#10141e] border border-[#1d2335] rounded-2xl overflow-hidden hover:border-teal-500/40 transition-all group flex flex-col">
+                  {/* Card Image Area (Matches Screenshot solid block) */}
+                  <div className="h-44 bg-[#0a0d14] relative flex items-center justify-center">
+                    <span className="text-[#131926] font-black tracking-[0.2em] select-none text-5xl">
+                      {rental.source.toUpperCase()}
+                    </span>
+                    <div className="absolute top-4 right-4 flex flex-col gap-2 items-end">
+                      <div className="bg-[#052627] border border-teal-800/60 rounded-full px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-teal-500">
+                        {rental.source}
+                      </div>
+                      {rental.property_type && (
+                        <div className="bg-[#052627] border border-teal-800/60 rounded-full px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-teal-500">
+                          {rental.property_type}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                  
+                  {/* Card Body */}
+                  <div className="p-5 flex flex-col flex-grow">
+                    <div className="flex justify-between items-center mb-3">
+                      <h3 className="text-[22px] font-extrabold tracking-tight text-white flex items-center">
+                         <span className="text-slate-500 font-semibold text-lg mr-1">$</span>
+                         {rental.price?.toLocaleString() || 'N/A'}
+                      </h3>
+                      <div className="flex items-center gap-2 text-[13px] font-bold text-slate-300">
+                        <div className="flex items-center gap-1.5 bg-[#181e2e] border border-[#21283b] px-2.5 py-1.5 rounded-lg">
+                          <BedDouble size={14} className="text-teal-500" />
+                          {rental.beds !== null ? (rental.beds % 1 === 0 ? rental.beds : rental.beds) : '-'}
+                        </div>
+                        <div className="flex items-center gap-1.5 bg-[#181e2e] border border-[#21283b] px-2.5 py-1.5 rounded-lg">
+                          <Bath size={14} className="text-teal-500" />
+                          {rental.baths !== null ? (rental.baths % 1 === 0 ? rental.baths : rental.baths) : '-'}
+                        </div>
+                      </div>
+                    </div>
+                    
+                    <div className="flex items-start gap-2 mb-3">
+                      <MapPin size={14} className="text-slate-500 shrink-0 mt-[3px]" />
+                      <p className="text-[13px] text-slate-300 font-medium leading-tight">
+                        {rental.raw_address} {rental.city && `, ${rental.city}`} {rental.state && `, ${rental.state}`} {rental.zip}
+                      </p>
+                    </div>
+
+                    <p className="text-[11px] text-slate-500 mb-6 line-clamp-3 leading-relaxed">
+                      {rental.description ? rental.description : 'No description provided.'}
+                    </p>
+                    
+                    <div className="mt-auto border-t border-[#1d2335] pt-4 flex justify-between items-center">
+                      <span className="text-[11px] font-bold text-slate-500 bg-[#151a28] px-2.5 py-1 rounded-md">
+                        {rental.sqft ? `${rental.sqft.toLocaleString()} sqft` : 'Unknown sqft'}
+                      </span>
+                      <a 
+                        href={rental.canonical_url} 
+                        target="_blank" 
+                        rel="noreferrer" 
+                        className="text-teal-500 hover:text-teal-400 font-bold text-[13px] flex items-center gap-1 transition-colors group-hover:underline underline-offset-4"
+                      >
+                        View Details
+                        <ExternalLink size={14} strokeWidth={2.5} />
+                      </a>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </main>
+      </div>
+    </div>
+  );
+}
+
+export default App;
