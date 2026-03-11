@@ -342,7 +342,13 @@ function App() {
                   {/* Card Details */}
                   <div className="p-6 md:p-7 flex flex-col flex-grow relative z-10">
                     <div className="flex gap-2 mb-5">
-                      <div className="bg-[#042a27] border border-[#094a45] rounded-full px-3.5 py-1.5 text-[10px] font-bold uppercase tracking-widest text-[#00e5c1] shadow-lg">
+                      <div className={`rounded-full px-3.5 py-1.5 text-[10px] font-bold uppercase tracking-widest shadow-lg ${
+                        rental.source.toLowerCase() === 'zillow'
+                          ? 'bg-[#006aff] border border-[#004fbd] text-white'
+                          : rental.source.toLowerCase() === 'redfin'
+                          ? 'bg-[#c82021] border border-[#9c191a] text-white'
+                          : 'bg-[#042a27] border border-[#094a45] text-[#00e5c1]'
+                      }`}>
                         {rental.source}
                       </div>
                       {rental.property_type && (
