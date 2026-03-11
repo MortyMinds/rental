@@ -1,7 +1,8 @@
 from scrapling.fetchers import StealthyFetcher
 import logging
 import asyncio
-from utils import extract_fees_from_description, parse_address, extract_property_type
+import re
+from utils import parse_address, extract_property_type
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -134,6 +135,10 @@ class ZillowScraper(BaseScraper):
     def parse(self, response):
         listings = []
         try:
+            # Check for pagination / next page
+            next_page_link = response.css('a[rel="next"]::attr(href)').get()
+            if next_page_link:
+                logging.info(f"Zillow: Found next page link: {next_page_link}")
             # Try different selectors for listing cards
             cards = response.css('[data-test="property-card"]')
             if not cards:
@@ -326,46 +331,111 @@ class ZillowScraper(BaseScraper):
         return listings
 
     def parse_detail(self, response) -> dict:
-        """Parses a Zillow detail page for missing specs."""
-        text = response.get_all_text(separator=" | ")
+        """Parses a Zillow detail page for missing specs and address."""
+        try:
+            text = response.get_all_text(separator=" | ")
+        except:
+            text = str(response)
+            
         full_text = text.lower()
         
-        # Specs regex
+        # Check for CAPTCHA/Block
+        if "confirm you are human" in full_text or "captcha" in full_text or "security check" in full_text:
+            logging.warning("Zillow detail page returned CAPTCHA/Block. Skipping.")
+            return {}
+
+        # 1. Address Extraction from detail page
+        # Zillow often has the full address in the title or a specific header
+        # Look for "Address | City, ST Zip" or "Address, City, ST Zip"
+        # Example: "123 Main St | Santa Clara, CA 95051"
+        raw_address = None
+        # Try different address patterns in the text
+        patterns = [
+            r'([^|]+)\s*\|\s*([^,]+),\s*([A-Z]{2})\s*(\d{5})', # Pipe separated
+            r'([^,]+),\s*([^,]+),\s*([A-Z]{2})\s*(\d{5})',     # Comma separated
+            r'address\s*:\s*([^|,\n]+(?:,\s*[^|,\n]+){2,3})' # Labelled address
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, text, re.I)
+            if match:
+                if len(match.groups()) >= 4:
+                    raw_address = f"{match.group(1).strip()}, {match.group(2).strip()}, {match.group(3).strip()} {match.group(4).strip()}"
+                else:
+                    raw_address = match.group(1).strip()
+                break
+
+        # 2. Specs Extraction
+        # Beds: look for "1 bd", "Studio", "2 beds", etc.
         beds_match = re.search(r'(\d+|\b(?:studio)\b)\s*(?:bd|beds?|bedroom)', full_text, re.I)
+        # Baths: look for "1 ba", "1.5 baths", "2 bathrooms", etc.
         baths_match = re.search(r'([\d.]+)\s*(?:ba|baths?|bathrooms?)', full_text, re.I)
-        sqft_match = re.search(r'([\d,.]+)\s*(?:sqft|sq\s*ft|square\s*feet|sf)', full_text, re.I)
+        # Sqft: handle ranges like "758 - 1,378 sqft" and single values
+        sqft_match = re.search(r'(?:[\d,.-]+\s*-\s*)?([\d,.]+)\s*(?:sqft|sq\s*ft|square\s*feet|sf)', full_text, re.I)
         
         beds = None
         if beds_match:
             beds = 0.0 if beds_match.group(1).lower() == 'studio' else float(beds_match.group(1))
         
-        baths = float(baths_match.group(1)) if baths_match else None
+        # Aggressive baths search for apartment complexes
+        baths = None
+        if baths_match:
+            try:
+                baths = float(baths_match.group(1))
+            except: pass
         
+        if baths is None:
+            # Look for patterns like "1-2 Baths" or "1.5 Baths"
+            m = re.search(r'([\d.]+)\s*(?:-\s*[\d.]+\s*)?ba', full_text)
+            if m: 
+                try: baths = float(m.group(1))
+                except: pass
+        
+        # Third fallback for baths: look for any number followed by ba/bathrooms
+        if baths is None:
+            all_baths = re.findall(r'([\d.]+)\s*(?:ba|baths?|bathrooms?)', full_text)
+            if all_baths:
+                try:
+                    vals = [float(v) for v in all_baths if v.replace('.','',1).isdigit()]
+                    if vals: baths = min(vals) # Take the minimum bath count for complexes
+                except: pass
+  
         sqft = None
         if sqft_match:
             try:
-                sqft = int(float(sqft_match.group(1).replace(',', '')))
+                # Clean up and pick the last number in a potential range
+                sqft_val = sqft_match.group(1).replace(',', '')
+                sqft = int(float(sqft_val))
             except: pass
-
-        # Description
-        desc_selectors = ['[data-test="ds-overview"]', '.ds-overview', '.property-description']
-        description = ""
-        for s in desc_selectors:
-            found = response.css(f"{s}::text").get()
-            if found:
-                description = found
-                break
         
-        if not description:
-            # Look for large blocks of text
-            description = text[:1000]
-
-        return {
+        if sqft is None:
+            # Aggressive sqft search for apartment complexes
+            # Look for patterns like "758 - 1,378 sqft" or "1,378 sqft"
+            m = re.search(r'([\d,]+)\s*(?:-\s*[\d,]+\s*)?sq\s*ft', full_text)
+            if m: sqft = int(m.group(1).replace(',', ''))
+         
+        # Third fallback for sqft: look for any number followed by sqft in the whole text
+        if sqft is None:
+            all_sqft = re.findall(r'([\d,]+)\s*(?:sqft|sq\s*ft|square\s*feet)', full_text)
+            if all_sqft:
+                # Try to pick a sensible one (usually the largest in an apartment complex represents max size)
+                try:
+                    vals = [int(v.replace(',', '')) for v in all_sqft if v.replace(',', '').isdigit()]
+                    if vals: sqft = max(vals)
+                except: pass
+  
+        details = {
             'beds': beds,
             'baths': baths,
             'sqft': sqft,
-            'description': description
+            'description': text[:2000] # Update description with fuller text if available
         }
+        if raw_address:
+            details['raw_address'] = raw_address
+            from utils import parse_address
+            details['city'], details['state'], details['zip'] = parse_address(raw_address)
+            
+        return details
 
     def _parse_zillow_text_item(self, text: str):
         """Helper to parse a single listing from a text/markdown chunk."""
@@ -376,6 +446,33 @@ class ZillowScraper(BaseScraper):
         link_match = re.search(r'\[.*?\]\((https://www\.zillow\.com/.*?)\)', text)
         url = link_match.group(1) if link_match else ""
         
+        # Address extraction FIRST
+        raw_address = ""
+        # 1. Try markdown link text
+        link_text_match = re.search(r'\[(.*?)\]\(https://www\.zillow\.com', text)
+        if link_text_match:
+            raw_address = link_text_match.group(1).strip()
+
+        # 2. If empty or looks like a price/junk, try lines
+        if not raw_address or '$' in raw_address or len(raw_address) < 5 or 'Zillow' in raw_address:
+            lines = [l.strip() for l in text.split('\n') if l.strip()]
+            for line in lines:
+                # Basic address-like check
+                if '$' not in line and not line.startswith('http') and len(line) > 5 and 'Title:' not in line:
+                    raw_address = line.replace('###', '').strip()
+                    break
+        
+        if not raw_address: raw_address = "Unknown Address"
+
+        source_id = ""
+        if url and 'homedetails' in url:
+            zpid_match = re.search(r'(\d+)_zpid', url)
+            source_id = zpid_match.group(1) if zpid_match else url.split('/')[-1]
+        
+        if not source_id:
+            # Use hash of address to deduplicate if URL is missing or generic
+            source_id = hashlib.md5(f"zillow_{raw_address.lower()}".encode()).hexdigest()[:10]
+
         # Price
         price_match = re.search(r'\$(\d{1,3}(?:,\d{3})*(?:\+)?(?:\/mo)?)', text)
         price_str = price_match.group(1) if price_match else None
@@ -410,32 +507,6 @@ class ZillowScraper(BaseScraper):
         except:
             sqft = None
         
-        # Address extraction
-        raw_address = ""
-        # 1. Try markdown link text
-        link_text_match = re.search(r'\[(.*?)\]\(https://www\.zillow\.com', text)
-        if link_text_match:
-            raw_address = link_text_match.group(1).strip()
-
-        # 2. If empty or looks like a price/junk, try lines
-        if not raw_address or '$' in raw_address or len(raw_address) < 5 or 'Zillow' in raw_address:
-            lines = [l.strip() for l in text.split('\n') if l.strip()]
-            for line in lines:
-                # Basic address-like check
-                if '$' not in line and not line.startswith('http') and len(line) > 5 and 'Title:' not in line:
-                    raw_address = line.replace('###', '').strip()
-                    break
-        
-        if not raw_address: raw_address = "Unknown Address"
-
-        source_id = ""
-        if url:
-            zpid_match = re.search(r'(\d+)_zpid', url)
-            source_id = zpid_match.group(1) if zpid_match else url.split('/')[-1]
-        
-        if not source_id:
-            source_id = hashlib.md5(text.encode()).hexdigest()[:10]
-
         listing = {
             'source': 'zillow',
             'source_id': source_id,
@@ -597,44 +668,156 @@ class RedfinScraper(BaseScraper):
         return listings
 
     def parse_detail(self, response) -> dict:
-        """Parses a Redfin detail page for missing specs."""
-        text = response.get_all_text(separator=" | ")
+        """Parses a Redfin detail page for missing specs and address."""
+        try:
+            text = response.get_all_text(separator=" | ")
+        except:
+            text = str(response)
+            
         full_text = text.lower()
         
+        # Check for CAPTCHA/Block
+        if "confirm you are human" in full_text or "captcha" in full_text or "security check" in full_text or "human verification" in full_text:
+            logging.warning("Redfin detail page returned CAPTCHA/Block. Skipping.")
+            return {}
+
+        # 1. Address Extraction
+        # Look for patterns like "Street | City, ST 12345" or "Street, City, ST 12345"
+        raw_address = None
+        patterns = [
+            r'([^|]+)\s*\|\s*([^,]+),\s*([A-Z]{2})\s*(\d{5})', # Pipe separated
+            r'([^,]+),\s*([^,]+),\s*([A-Z]{2})\s*(\d{5})',     # Comma separated
+            r'address\s*:\s*([^|,\n]+(?:,\s*[^|,\n]+){2,3})' # Labelled address
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, text, re.I)
+            if match:
+                if len(match.groups()) >= 4:
+                    raw_address = f"{match.group(1).strip()}, {match.group(2).strip()}, {match.group(3).strip()} {match.group(4).strip()}"
+                else:
+                    raw_address = match.group(1).strip()
+                break
+
+        # 2. Specs Extraction
         beds_match = re.search(r'(\d+|Studio)\s*(?:bd|beds?|bedroom)', full_text, re.I)
         baths_match = re.search(r'([\d.]+)\s*(?:ba|baths?|bathrooms?)', full_text, re.I)
-        sqft_match = re.search(r'([\d,.]+)\s*(?:sqft|sq\s*ft|square\s*feet|sf)', full_text, re.I)
+        # Handle sqft ranges like "750 - 1,200 sqft"
+        sqft_match = re.search(r'(?:[\d,.-]+\s*-\s*)?([\d,.]+)\s*(?:sqft|sq\s*ft|square\s*feet|sf)', full_text, re.I)
         
         beds = None
         if beds_match:
             beds = 0.0 if beds_match.group(1).lower() == 'studio' else float(beds_match.group(1))
             
-        baths = float(baths_match.group(1)) if baths_match else None
+        baths = float(baths_match.group(1)) if (baths_match and baths_match.group(1).replace('.','',1).isdigit()) else None
         
         sqft = None
         if sqft_match:
             try:
-                sqft = int(float(sqft_match.group(1).replace(',', '')))
+                sqft_val = sqft_match.group(1).replace(',', '')
+                sqft = int(float(sqft_val))
             except: pass
+        
+        if sqft is None:
+            # Aggressive sqft search for apartment complexes
+            m = re.search(r'([\d,]+)\s*(?:sq\s*ft|square\s*feet)', full_text)
+            if m: sqft = int(m.group(1).replace(',', ''))
 
-        description = response.css('.remarks::text').get() or text[:500]
-
-        return {
+        details = {
             'beds': beds,
             'baths': baths,
             'sqft': sqft,
-            'description': description
+            'description': text[:2000]
         }
+        if raw_address:
+            details['raw_address'] = raw_address
+            from utils import parse_address
+            details['city'], details['state'], details['zip'] = parse_address(raw_address)
+            
+        return details
 
     def _parse_redfin_text_item(self, text: str):
         """Helper to parse a single Redfin listing from a text/markdown chunk."""
         import re
         import hashlib
         
-        # Link extraction from markdown [text](url)
-        link_match = re.search(r'\[.*?\]\((https://www\.redfin\.com/.*?)\)', text)
-        url = link_match.group(1) if link_match else ""
+        # Link extraction from markdown [text](url) - More robust regex
+        # Prioritize finding the URL that contains /home/, /apartment/, /condo/, etc.
+        # Markdown might contain multiple links, we want the most specific property link.
+        links = re.findall(r'\[.*?\]\((https?://(?:www\.)?redfin\.com[^\s)]+)\)', text)
+        url = ""
         
+        # Filter out generic Redfin URLs
+        def is_generic(u):
+            u = u.strip('/').lower()
+            generic = [
+                'https://www.redfin.com', 'http://www.redfin.com',
+                'https://www.redfin.com/rentals/renter-dashboard',
+                'http://www.redfin.com/rentals/renter-dashboard',
+                'https://www.redfin.com/houses-near-me',
+                'http://www.redfin.com/houses-near-me'
+            ]
+            return any(u == g.strip('/').lower() for g in generic)
+
+        for link in links:
+            if any(path in link for path in ['/home/', '/apartment/', '/condo/', '/rentals/']) and not is_generic(link):
+                url = link
+                break
+        
+        # If no specific property link found, pick the first one that isn't generic
+        if not url and links:
+            for link in links:
+                if not is_generic(link):
+                    url = link
+                    break
+
+        # Address extraction FIRST to help with source_id if URL is generic
+        raw_address = ""
+        # 1. Try markdown link text
+        # If we found a specific URL, try to get the label for THAT URL
+        if url:
+            escaped_url = re.escape(url)
+            link_text_match = re.search(rf'\[(.*?)\]\({escaped_url}\)', text)
+            if link_text_match:
+                raw_address = link_text_match.group(1).strip()
+
+        # 2. Fallback to generic link text search
+        if not raw_address:
+            link_text_match = re.search(r'\[(.*?)\]\(https?://(?:www\.)?redfin\.com', text)
+            if link_text_match:
+                raw_address = link_text_match.group(1).strip()
+        
+        # Clean up potential separators in address
+        if ' | ' in raw_address:
+            raw_address = raw_address.split(' | ')[-1].strip()
+
+        # 3. If empty or looks like a price/junk, try lines
+        if not raw_address or '$' in raw_address or len(raw_address) < 5 or 'Redfin' in raw_address:
+            lines = [l.strip() for l in text.split('\n') if l.strip()]
+            for line in lines:
+                if '$' not in line and not line.startswith('http') and len(line) > 5 and 'Title:' not in line:
+                    raw_address = line.replace('###', '').strip()
+                    break
+        
+        if not raw_address: raw_address = "Unknown Address"
+
+        source_id = ""
+        if url and not is_generic(url):
+            # Redfin IDs can be in /home/(\d+) or /apartment/(\d+) or /condo/(\d+) etc.
+            id_match = re.search(r'/(?:home|apartment|condo|rentals)/(\d+)', url)
+            if id_match:
+                source_id = id_match.group(1)
+            else:
+                # Fallback to the last part of the URL path
+                parts = [p for p in url.split('/') if p]
+                if parts:
+                    source_id = parts[-1]
+            
+        if not source_id:
+            # If URL is generic or missing, use a hash of the address + source to deduplicate
+            import hashlib
+            source_id = hashlib.md5(f"redfin_{raw_address.lower()}".encode()).hexdigest()[:10]
+
         # Price
         price_match = re.search(r'\$(\d{1,3}(?:,\d{3})*(?:\+)?(?:\/mo)?)', text)
         price_str = price_match.group(1) if price_match else None
@@ -667,31 +850,6 @@ class RedfinScraper(BaseScraper):
                     sqft = int(sqft_context.group(1).replace(',', ''))
                 except: pass
         
-        # Address extraction
-        raw_address = ""
-        # 1. Try markdown link text
-        link_text_match = re.search(r'\[(.*?)\]\(https://www\.redfin\.com', text)
-        if link_text_match:
-            raw_address = link_text_match.group(1).strip()
-
-        # 2. If empty or looks like a price/junk, try lines
-        if not raw_address or '$' in raw_address or len(raw_address) < 5 or 'Redfin' in raw_address:
-            lines = [l.strip() for l in text.split('\n') if l.strip()]
-            for line in lines:
-                if '$' not in line and not line.startswith('http') and len(line) > 5 and 'Title:' not in line:
-                    raw_address = line.replace('###', '').strip()
-                    break
-        
-        if not raw_address: raw_address = "Unknown Address"
-
-        source_id = ""
-        if url:
-            id_match = re.search(r'/home/(\d+)$', url)
-            source_id = id_match.group(1) if id_match else url.split('/')[-1]
-            
-        if not source_id:
-            source_id = hashlib.md5(text.encode()).hexdigest()[:10]
-
         listing = {
             'source': 'redfin',
             'source_id': source_id,
@@ -701,7 +859,7 @@ class RedfinScraper(BaseScraper):
             'beds': beds,
             'baths': baths,
             'sqft': sqft,
-            'description': text[:200].replace('\n', ' '),
+            'description': text[:500].replace('\n', ' '), # Keep more description for debugging
             'extra_metadata': {'parsed_from': 'text_fallback'}
         }
         
