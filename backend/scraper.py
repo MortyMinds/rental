@@ -116,6 +116,20 @@ class BaseScraper:
         """
         raise NotImplementedError("Subclasses must implement parse_detail()")
 
+    # Regex for baths: require word boundary after 'ba' to avoid matching inside words
+    _BATHS_RE = re.compile(r'([\d.]+)\s*(?:ba\b|baths?\b|bathrooms?\b)', re.I)
+
+    def _parse_baths(self, text: str):
+        """Extract baths from text with word-boundary safety and sanity check (0–15)."""
+        m = self._BATHS_RE.search(text)
+        if not m:
+            return None
+        try:
+            val = float(m.group(1))
+            return val if 0 < val <= 15 else None
+        except:
+            return None
+
     def _clean_price(self, price_str: str) -> int:
         if not price_str:
             return 0
@@ -312,15 +326,11 @@ class ZillowScraper(BaseScraper):
                         beds = None
                 
                 # Baths: look for "1 ba", "1.5 baths", "2 bathrooms", "1ba", "1 bath"
-                baths_match = re.search(r'([\d.]+)\s*(?:ba|baths?|bathrooms?)', full_text, re.I)
-                if not baths_match:
+                # Use word boundary after 'ba' to avoid matching inside words (e.g. avoid "935ba..." in nav text)
+                baths = self._parse_baths(full_text)
+                if baths is None:
                     # Try a broader search in all text if the primary separator split it
-                    baths_match = re.search(r'([\d.]+)\s*(?:ba|baths?|bathrooms?)', card.get_all_text(), re.I)
-                
-                try:
-                    baths = float(baths_match.group(1)) if baths_match else None
-                except:
-                    baths = None
+                    baths = self._parse_baths(card.get_all_text())
                 
                 # Sqft: look for "1,200 sqft", "500 sq ft", "1200sgft", "1,200 sf", "square feet"
                 sqft_match = re.search(r'([\d,.]+)\s*(?:sqft|sq\s*ft|square\s*feet|sf)', full_text, re.I)
@@ -398,8 +408,7 @@ class ZillowScraper(BaseScraper):
                     m = re.search(r'(\d+|studio)\s*(?:bd|beds?|bedroom)', desc_text)
                     if m: listing['beds'] = 0.0 if m.group(1) == 'studio' else float(m.group(1))
                 if listing['baths'] is None:
-                    m = re.search(r'([\d.]+)\s*(?:ba|baths?|bathrooms?)', desc_text)
-                    if m: listing['baths'] = float(m.group(1))
+                    listing['baths'] = self._parse_baths(desc_text)
                 if listing['sqft'] is None:
                     m = re.search(r'([\d,]+)\s*(?:sqft|sq\s*ft)', desc_text)
                     if m: listing['sqft'] = int(m.group(1).replace(',', ''))
@@ -457,30 +466,18 @@ class ZillowScraper(BaseScraper):
 
         # 2. Specs Extraction
         beds_match = re.search(r'(\d+|\b(?:studio)\b)\s*(?:bd|beds?|bedroom)', full_text, re.I)
-        baths_match = re.search(r'([\d.]+)\s*(?:ba|baths?|bathrooms?)', full_text, re.I)
         
         beds = None
         if beds_match:
             beds = 0.0 if beds_match.group(1).lower() == 'studio' else float(beds_match.group(1))
         
-        # Aggressive baths search for apartment complexes
-        baths = None
-        if baths_match:
-            try:
-                baths = float(baths_match.group(1))
-            except: pass
-        
+        # Use word-boundary-safe helper; fall back to findall with sanity check
+        baths = self._parse_baths(full_text)
         if baths is None:
-            m = re.search(r'([\d.]+)\s*(?:-\s*[\d.]+\s*)?ba', full_text)
-            if m: 
-                try: baths = float(m.group(1))
-                except: pass
-        
-        if baths is None:
-            all_baths = re.findall(r'([\d.]+)\s*(?:ba|baths?|bathrooms?)', full_text)
+            all_baths = re.findall(r'([\d.]+)\s*(?:ba\b|baths?\b|bathrooms?\b)', full_text, re.I)
             if all_baths:
                 try:
-                    vals = [float(v) for v in all_baths if v.replace('.','',1).isdigit()]
+                    vals = [float(v) for v in all_baths if v.replace('.','',1).isdigit() and 0 < float(v) <= 15]
                     if vals: baths = min(vals)
                 except: pass
   
@@ -564,11 +561,7 @@ class ZillowScraper(BaseScraper):
             except:
                 beds = None
         
-        baths_match = re.search(r'([\d.]+)\s*(?:ba|baths?|bathrooms?)', text, re.I)
-        try:
-            baths = float(baths_match.group(1)) if baths_match else None
-        except:
-            baths = None
+        baths = self._parse_baths(text)
         
         # --- Use the shared robust sqft extraction ---
         sqft = self._extract_sqft(text)
@@ -677,8 +670,7 @@ class RedfinScraper(BaseScraper):
                     beds = 0 if str(beds_val).lower() == 'studio' else float(beds_val) if beds_val.replace('.','',1).isdigit() else 0
                 
                 if baths is None:
-                    baths_match = re.search(r'([\d.]+)\s*(?:ba|baths?|bathrooms?)', card_text, re.I)
-                    baths = float(baths_match.group(1)) if (baths_match and baths_match.group(1).replace('.','',1).isdigit()) else 0
+                    baths = self._parse_baths(card_text) or 0
                 
                 if sqft is None:
                     sqft_match = re.search(r'([\d,]+)\s*(?:sqft|sq\s*ft)', card_text, re.I)
@@ -771,13 +763,12 @@ class RedfinScraper(BaseScraper):
 
         # 2. Specs Extraction
         beds_match = re.search(r'(\d+|Studio)\s*(?:bd|beds?|bedroom)', full_text, re.I)
-        baths_match = re.search(r'([\d.]+)\s*(?:ba|baths?|bathrooms?)', full_text, re.I)
         
         beds = None
         if beds_match:
             beds = 0.0 if beds_match.group(1).lower() == 'studio' else float(beds_match.group(1))
             
-        baths = float(baths_match.group(1)) if (baths_match and baths_match.group(1).replace('.','',1).isdigit()) else None
+        baths = self._parse_baths(full_text)
         
         # --- Enhanced sqft extraction (ordered by reliability) ---
         sqft = self._extract_sqft(full_text)
@@ -892,11 +883,7 @@ class RedfinScraper(BaseScraper):
             except:
                 beds = None
         
-        baths_match = re.search(r'([\d.]+)\s*(?:ba|baths?|bathrooms?)', text, re.I)
-        try:
-            baths = float(baths_match.group(1)) if (baths_match and baths_match.group(1).replace('.','',1).isdigit()) else None
-        except:
-            baths = None
+        baths = self._parse_baths(text)
         
         # --- Use the shared robust sqft extraction ---
         sqft = self._extract_sqft(text)
