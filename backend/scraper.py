@@ -1,8 +1,10 @@
 from scrapling.fetchers import StealthyFetcher
 import logging
+import os
 import asyncio
 import re
 from utils import parse_address, extract_property_type
+from urllib.parse import unquote
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -104,6 +106,56 @@ class BaseScraper:
         logging.error(f"All fetch attempts failed for {url}. Last error: {last_error}")
         return None
 
+    async def fetch_detail(self, url: str):
+        """
+        Fetch a detail page using a real browser with scrolling to load lazy content.
+        Falls back to the regular proxy-based fetch if browser fetch fails.
+        """
+        try:
+            from patchright.async_api import async_playwright
+            from scrapling import Selector
+
+            logging.info(f"Fetching detail page with browser + scroll: {url}")
+
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(headless=True)
+                context = await browser.new_context(
+                    user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                    viewport={"width": 1920, "height": 1080}
+                )
+                page = await context.new_page()
+
+                try:
+                    await page.goto(url, wait_until="networkidle", timeout=30000)
+                except Exception:
+                    await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+
+                # Scroll incrementally to trigger lazy-loaded content
+                for i in range(5):
+                    await page.evaluate(f"window.scrollTo(0, {(i + 1) * 800})")
+                    await asyncio.sleep(0.8)
+
+                # Scroll back to top
+                await page.evaluate("window.scrollTo(0, 0)")
+                await asyncio.sleep(0.5)
+
+                html = await page.content()
+                await browser.close()
+
+            if html and len(html) > 500:
+                html_lower = html.lower()
+                block_markers = ["captcha", "confirm you are human", "security check", "access denied"]
+                if not any(m in html_lower for m in block_markers):
+                    logging.info(f"Browser detail fetch successful ({len(html)} chars)")
+                    return Selector(html)
+                else:
+                    logging.warning("Browser detail fetch returned captcha/block page")
+        except Exception as e:
+            logging.warning(f"Browser-based detail fetch failed for {url}: {e}")
+
+        logging.info(f"Falling back to proxy fetch for detail page: {url}")
+        return await self.fetch(url)
+
     def parse(self, response):
         """
         Should return a list of listing dictionaries from a search result page.
@@ -116,8 +168,9 @@ class BaseScraper:
         """
         raise NotImplementedError("Subclasses must implement parse_detail()")
 
-    # Regex for baths: require word boundary after 'ba' to avoid matching inside words
-    _BATHS_RE = re.compile(r'([\d.]+)\s*(?:ba\b|baths?\b|bathrooms?\b)', re.I)
+    # Regex for baths: allow optional | or space between number and label
+    # require word boundary after 'ba' to avoid matching inside words
+    _BATHS_RE = re.compile(r'([\d.]+)\s*[|\s]*\s*(?:ba\b|baths?\b|bathrooms?\b)', re.I)
 
     def _parse_baths(self, text: str):
         """Extract baths from text with word-boundary safety and sanity check (0–15)."""
@@ -133,13 +186,15 @@ class BaseScraper:
     def _clean_price(self, price_str: str) -> int:
         if not price_str:
             return 0
+        # Handle "Total monthly price" and "Fees may apply" text by just keeping digits
         cleaned = "".join(filter(str.isdigit, price_str))
         return int(cleaned) if cleaned else 0
 
     def _extract_sqft(self, text: str) -> int | None:
         """
         Enhanced sqft extraction with multiple strategies, ordered by reliability.
-        Handles various formats found in Redfin/Zillow detail pages.
+        Handles various formats found in Redfin/Zillow detail pages, 
+        including those with ' | ' separators.
         """
         import re
         text_lower = text.lower() if text else ""
@@ -163,9 +218,9 @@ class BaseScraper:
                 except: pass
         
         # Strategy 2: Structured line pattern "N bed(s) N bath(s) N,NNN sq ft"
-        # This is the most common format on detail pages and avoids nearby listing pollution
+        # Allow ' | ' separators
         structured = re.search(
-            r'(\d+)\s*(?:beds?|bd)\s+(\d[\d.]*)\s*(?:baths?|ba)\s+([\d,]+)\s*(?:sq\s*ft|sqft)',
+            r'(\d+)\s*[|\s]*\s*(?:beds?|bd)\s*[|\s]*\s*(\d[\d.]*)\s*[|\s]*\s*(?:baths?|ba)\s*[|\s]*\s*([\d,]+)\s*[|\s]*\s*(?:sq\s*ft|sqft)',
             text_lower, re.I
         )
         if structured:
@@ -178,8 +233,8 @@ class BaseScraper:
         
         # Strategy 3: Labeled patterns ("Size: 1,200 sq ft", "Living Area: 950 Sq. Ft.")
         labeled_patterns = [
-            r'(?:size|area|living\s*(?:area|space)|floor\s*(?:size|area))\s*[:\-|]\s*([\d,]+)\s*(?:sq|sf)',
-            r'(?:size|area|living\s*(?:area|space)|floor\s*(?:size|area))\s*[:\-|]\s*([\d,]+)',
+            r'(?:size|area|living\s*(?:area|space)|floor\s*(?:size|area))\s*[:\-|\s]\s*([\d,]+)\s*[|\s]*\s*(?:sq|sf)',
+            r'(?:size|area|living\s*(?:area|space)|floor\s*(?:size|area))\s*[:\-|\s]\s*([\d,]+)',
         ]
         for pat in labeled_patterns:
             m = re.search(pat, text_lower)
@@ -195,9 +250,9 @@ class BaseScraper:
         # Use word boundary to avoid matching partial numbers
         # For ranges like "758 - 1,378 sqft", capture the first number
         standard_patterns = [
-            r'([\d,]+)\s*[-–—]\s*[\d,]+\s*(?:sqft|sq\.?\s*ft\.?|square\s*feet)\b',  # Range: pick first
-            r'([\d,]+)\s*(?:sqft|sq\.?\s*ft\.?|square\s*feet)\b',  # Single value
-            r'([\d,]+)\s*sf\b',
+            r'([\d,]+)\s*[-–—]\s*[\d,]+\s*[|\s]*\s*(?:sqft|sq\.?\s*ft\.?|square\s*feet)\b',  # Range: pick first
+            r'([\d,]+)\s*[|\s]*\s*(?:sqft|sq\.?\s*ft\.?|square\s*feet)\b',  # Single value
+            r'([\d,]+)\s*[|\s]*\s*sf\b',
         ]
         for pat in standard_patterns:
             m = re.search(pat, text_lower)
@@ -211,7 +266,7 @@ class BaseScraper:
         
         # Strategy 5: Collect all sqft mentions and pick the most likely one
         # For apartment complexes, prefer the first reasonable value
-        all_sqft = re.findall(r'([\d,]+)\s*(?:sqft|sq\.?\s*ft\.?|square\s*feet|sf)\b', text_lower)
+        all_sqft = re.findall(r'([\d,]+)\s*[|\s]*\s*(?:sqft|sq\.?\s*ft\.?|square\s*feet|sf)\b', text_lower)
         if all_sqft:
             try:
                 vals = [int(v.replace(',', '')) for v in all_sqft if v.replace(',', '').isdigit()]
@@ -264,8 +319,8 @@ class ZillowScraper(BaseScraper):
                     # If it's a raw Markdown string, .get_all_text() might fail
                     full_text = str(response)
                 
-                # Split by likely separators: price patterns, horizontal lines, or multiple newlines
-                potential_listings = re.split(r'\n(?=\$\d{1,3}(?:,\d{3})*)|\n---\n', full_text)
+                # Split by likely separators: price patterns (including markdown [$price] format)
+                potential_listings = re.split(r'\n(?=\s*\*?\s*\[?\$\d{1,3}(?:,\d{3})*)', full_text)
                 if len(potential_listings) > 1:
                     logging.info(f"Zillow: Using text-fallback parsing for {len(potential_listings)} items")
                     for text_item in potential_listings:
@@ -290,7 +345,7 @@ class ZillowScraper(BaseScraper):
                 # Robust Source ID extraction
                 import re
                 source_id = ""
-                zpid_match = re.search(r'(\d+)_zpid', url)
+                zpid_match = re.search(r'(\d+)_zpid', unquote(url))
                 if zpid_match:
                     source_id = zpid_match.group(1)
                 else:
@@ -430,15 +485,66 @@ class ZillowScraper(BaseScraper):
 
     def parse_detail(self, response) -> dict:
         """Parses a Zillow detail page for missing specs and address."""
+        fee_status = None
         try:
+            # Try to get data from specific CSS selectors first (more reliable for detail pages)
+            # Based on the user provided snippet
+            price_text = response.css('[data-testid="price"] span::text').get()
+            if not price_text:
+                price_text = response.css('[data-testid="price"]::text').get()
+            
+            # Extract beds, baths, sqft from structured containers
+            beds = None
+            baths = None
+            sqft = None
+            
+            # Zillow's new layout uses data-testid="bed-bath-sqft-fact-container"
+            fact_containers = response.css('[data-testid="bed-bath-sqft-fact-container"]')
+            for container in fact_containers:
+                value = container.css('span:first-child::text').get()
+                label = container.css('span:last-child::text').get()
+                if not label: continue
+                label = label.lower()
+                
+                if 'bed' in label:
+                    try: beds = float(value) if value else None
+                    except: pass
+                elif 'bath' in label:
+                    try: baths = float(value) if value else None
+                    except: pass
+                elif 'sqft' in label:
+                    try: sqft = int(value.replace(',', '')) if value else None
+                    except: pass
+
+            # Address from H1
+            raw_address = response.css('h1::text').get()
+            if raw_address:
+                # Normalize whitespace (replace \xa0, \n, etc with space)
+                raw_address = " ".join(raw_address.split())
+            
+            # Extract Fee status
+            # Get full text early (needed for fallback fee checks below)
             text = response.get_all_text(separator=" | ")
+
+            fee_status = response.css('.tmp-fees-may-apply::text').get() or response.css('.tmp-total-monthly-price::text').get()
         except:
             text = str(response)
+            price_text = None
+            beds = None
+            baths = None
+            sqft = None
+            raw_address = None
+            fee_status = None
             
         full_text = text.lower()
+        if fee_status is None:
+            if "fees may apply" in full_text:
+                fee_status = "Fees may apply"
+            elif "total monthly price" in full_text:
+                fee_status = "Total monthly price"
         
         # Reject too-short responses (anti-bot empty shells)
-        if len(text) < 500:
+        if len(text) < 40:
             logging.warning(f"Zillow detail page too short ({len(text)} chars). Likely blocked.")
             return {}
         
@@ -447,49 +553,54 @@ class ZillowScraper(BaseScraper):
             logging.warning("Zillow detail page returned CAPTCHA/Block. Skipping.")
             return {}
 
-        # 1. Address Extraction from detail page
-        raw_address = None
-        patterns = [
-            r'([^|]+)\s*\|\s*([^,]+),\s*([A-Z]{2})\s*(\d{5})',
-            r'([^,]+),\s*([^,]+),\s*([A-Z]{2})\s*(\d{5})',
-            r'address\s*:\s*([^|,\n]+(?:,\s*[^|,\n]+){2,3})'
-        ]
-        
-        for pattern in patterns:
-            match = re.search(pattern, text, re.I)
-            if match:
-                if len(match.groups()) >= 4:
-                    raw_address = f"{match.group(1).strip()}, {match.group(2).strip()}, {match.group(3).strip()} {match.group(4).strip()}"
-                else:
-                    raw_address = match.group(1).strip()
-                break
+        # 1. Address Extraction from detail page (if not already found)
+        if not raw_address:
+            patterns = [
+                r'([^|]+)\s*\|\s*([^,]+),\s*([A-Z]{2})\s*(\d{5})',
+                r'([^,]+),\s*([^,]+),\s*([A-Z]{2})\s*(\d{5})',
+                r'address\s*:\s*([^|,\n]+(?:,\s*[^|,\n]+){2,3})'
+            ]
+            
+            for pattern in patterns:
+                match = re.search(pattern, text, re.I)
+                if match:
+                    if len(match.groups()) >= 4:
+                        raw_address = f"{match.group(1).strip()}, {match.group(2).strip()}, {match.group(3).strip()} {match.group(4).strip()}"
+                    else:
+                        raw_address = match.group(1).strip()
+                    break
 
-        # 2. Specs Extraction
-        beds_match = re.search(r'(\d+|\b(?:studio)\b)\s*(?:bd|beds?|bedroom)', full_text, re.I)
+        # 2. Specs Extraction (if not already found)
+        if beds is None:
+            beds_match = re.search(r'(\d+|\b(?:studio)\b)\s*[|\s]*\s*(?:bd|beds?|bedroom)', full_text, re.I)
+            if beds_match:
+                beds = 0.0 if beds_match.group(1).lower() == 'studio' else float(beds_match.group(1))
         
-        beds = None
-        if beds_match:
-            beds = 0.0 if beds_match.group(1).lower() == 'studio' else float(beds_match.group(1))
-        
-        # Use word-boundary-safe helper; fall back to findall with sanity check
-        baths = self._parse_baths(full_text)
         if baths is None:
-            all_baths = re.findall(r'([\d.]+)\s*(?:ba\b|baths?\b|bathrooms?\b)', full_text, re.I)
-            if all_baths:
-                try:
-                    vals = [float(v) for v in all_baths if v.replace('.','',1).isdigit() and 0 < float(v) <= 15]
-                    if vals: baths = min(vals)
-                except: pass
+            baths = self._parse_baths(full_text)
+            if baths is None:
+                all_baths = re.findall(r'([\d.]+)\s*[|\s]*\s*(?:ba\b|baths?\b|bathrooms?\b)', full_text, re.I)
+                if all_baths:
+                    try:
+                        vals = [float(v) for v in all_baths if v.replace('.','',1).isdigit() and 0 < float(v) <= 15]
+                        if vals: baths = min(vals)
+                    except: pass
   
-        # --- Enhanced sqft extraction (ordered by reliability) ---
-        sqft = self._extract_sqft(full_text)
+        if sqft is None:
+            sqft = self._extract_sqft(full_text)
   
         details = {
             'beds': beds,
             'baths': baths,
             'sqft': sqft,
-            'description': text[:2000]
+            'description': text[:2000],
+            'extra_metadata': {
+                'fee_status': fee_status
+            }
         }
+        if price_text:
+            details['price'] = self._clean_price(price_text)
+            
         if raw_address:
             details['raw_address'] = raw_address
             from utils import parse_address
@@ -536,11 +647,10 @@ class ZillowScraper(BaseScraper):
 
         source_id = ""
         if url and 'homedetails' in url:
-            zpid_match = re.search(r'(\d+)_zpid', url)
+            zpid_match = re.search(r'(\d+)_zpid', unquote(url))
             source_id = zpid_match.group(1) if zpid_match else url.split('/')[-1]
         
         if not source_id:
-            # Use hash of address to deduplicate if URL is missing or generic
             source_id = hashlib.md5(f"zillow_{raw_address.lower()}".encode()).hexdigest()[:10]
 
         # Price
@@ -548,7 +658,7 @@ class ZillowScraper(BaseScraper):
         price_str = price_match.group(1) if price_match else None
         
         # Specs
-        beds_match = re.search(r'(\b\d+|\b(?:studio)\b)\s*(?:bd|beds?|bedroom)(?:\+)?', text, re.I)
+        beds_match = re.search(r'(\b\d+|\b(?:studio)\b)\s*[|\s]*\s*(?:bd|beds?|bedroom)(?:\+)?', text, re.I)
         if not beds_match:
             beds_match = re.search(r'\b(studio)\b', text, re.I)
         
@@ -563,7 +673,6 @@ class ZillowScraper(BaseScraper):
         
         baths = self._parse_baths(text)
         
-        # --- Use the shared robust sqft extraction ---
         sqft = self._extract_sqft(text)
         
         listing = {
@@ -575,7 +684,7 @@ class ZillowScraper(BaseScraper):
             'beds': beds,
             'baths': baths,
             'sqft': sqft,
-            'description': text[:4000].replace('\n', ' '), # Increased to preserve context for parsing
+            'description': text[:4000],
             'extra_metadata': {'parsed_from': 'text_fallback'}
         }
         
@@ -624,7 +733,7 @@ class RedfinScraper(BaseScraper):
                     full_text = str(response)
                 
                 # Redfin listings in Markdown often split by price, horizontal lines, or address-looking headers
-                potential_listings = re.split(r'\n(?=\$\d{1,3}(?:,\d{3})*)|\n---\n', full_text)
+                potential_listings = re.split(r'\n(?=\s*\*?\s*\[?\$\d{1,3}(?:,\d{3})*)', full_text)
                 if len(potential_listings) > 1:
                     logging.info(f"Redfin: Using text-fallback parsing for {len(potential_listings)} items")
                     for text_item in potential_listings:

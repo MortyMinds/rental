@@ -9,11 +9,9 @@ from datetime import datetime
 from dotenv import load_dotenv
 import json
 
-# Load environment variables
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 load_dotenv()
 
-# Semaphore to limit concurrent network requests across the entire application
-# Adjust this based on proxy limits and server respect
 MAX_CONCURRENT_REQUESTS = 3
 network_semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
 
@@ -34,8 +32,6 @@ def persist_listing(listing, update_only=False):
     
     try:
         if update_only:
-            # Targeted update for enrichment: only fill in NULLs
-            # Also allow updating canonical_url if it was previously a base domain
             c.execute('''
                 UPDATE rentals SET
                     beds = COALESCE(rentals.beds, ?),
@@ -43,6 +39,14 @@ def persist_listing(listing, update_only=False):
                     sqft = COALESCE(rentals.sqft, ?),
                     city = COALESCE(rentals.city, ?),
                     state = COALESCE(rentals.state, ?),
+                    price = CASE 
+                        WHEN (rentals.price IS NULL OR rentals.price = 0 OR rentals.price < 1100) THEN ? 
+                        ELSE rentals.price 
+                    END,
+                    extra_metadata = CASE
+                        WHEN (rentals.extra_metadata IS NULL OR rentals.extra_metadata = '{}' OR rentals.extra_metadata = '') THEN ?
+                        ELSE rentals.extra_metadata
+                    END,
                     canonical_url = CASE 
                         WHEN (
                             rentals.canonical_url = 'https://www.redfin.com' OR 
@@ -60,6 +64,8 @@ def persist_listing(listing, update_only=False):
             ''', (
                 listing.get('beds'), listing.get('baths'), listing.get('sqft'),
                 listing.get('city'), listing.get('state'),
+                listing.get('price'),
+                json.dumps(listing.get('extra_metadata', {})),
                 listing['canonical_url'],
                 listing.get('description', ''),
                 listing['source'], listing['source_id']
@@ -211,6 +217,7 @@ async def run_pipeline(zip_codes, platforms):
 class SnapshotResponse:
     def __init__(self, text): self.text = text
     def get_all_text(self, separator=" "): return self.text
+    def __str__(self): return self.text
 
 async def enrich_single_listing(listing):
     """
@@ -243,22 +250,75 @@ async def enrich_single_listing(listing):
                 else:
                     raw_text = str(raw_data)
                 
-                # Use SnapshotResponse to reuse the existing scraper parsing logic
                 snapshot_details = scraper.parse_detail(SnapshotResponse(raw_text))
-                
+
+                if listing['canonical_url'] in raw_text:
+                    url_idx = raw_text.find(listing['canonical_url'])
+                    import re
+                    url_escaped = re.escape(listing['canonical_url'])
+
+                    # Direct extraction: price from [$PRICE](URL) markdown link
+                    price_link = re.search(rf'\[\$([^\]]+)\]\({url_escaped}[^)]*\)', raw_text)
+
+                    # Build a tight window around this listing
+                    # Look backward for THIS listing's price link start
+                    window_start = max(0, url_idx - 300)
+                    if price_link:
+                        window_start = price_link.start()
+
+                    # Look forward for the NEXT listing's price pattern [$DIGIT
+                    next_listing_match = re.search(r'\[\$\d', raw_text[url_idx + 10:])
+                    if next_listing_match:
+                        window_end = url_idx + 10 + next_listing_match.start()
+                    else:
+                        window_end = min(len(raw_text), url_idx + 800)
+
+                    window = raw_text[window_start:window_end]
+                    window_details = scraper._parse_zillow_text_item(window)
+
+                    # Override price with directly extracted value from markdown link
+                    if price_link:
+                        direct_price = scraper._clean_price(price_link.group(1))
+                        if direct_price and direct_price > 0:
+                            window_details['price'] = direct_price
+
+                    for k, v in window_details.items():
+                        if v is not None and v != 0 and v != "Unknown Address":
+                            snapshot_details[k] = v
+
                 # Merge details from snapshot
                 updated = False
-                for key in ['beds', 'baths', 'sqft']:
-                    if listing.get(key) is None and snapshot_details.get(key) is not None:
-                        listing[key] = snapshot_details[key]
-                        updated = True
+                for key in ['beds', 'baths', 'sqft', 'price', 'raw_address']:
+                    val = snapshot_details.get(key)
+                    if val is not None:
+                        if listing.get(key) is None or listing.get(key) == 0:
+                            listing[key] = val
+                            updated = True
+                        elif key == 'price' and listing.get(key) < 1100 and val > 1100:
+                            listing[key] = val
+                            updated = True
+                
+                if snapshot_details.get('extra_metadata'):
+                    if not listing.get('extra_metadata'):
+                        listing['extra_metadata'] = {}
+                    
+                    if isinstance(listing['extra_metadata'], str):
+                        try:
+                            listing['extra_metadata'] = json.loads(listing['extra_metadata'])
+                        except:
+                            listing['extra_metadata'] = {}
+
+                    for m_key, m_val in snapshot_details['extra_metadata'].items():
+                        if m_val and not listing['extra_metadata'].get(m_key):
+                            listing['extra_metadata'][m_key] = m_val
+                            updated = True
                 
                 if updated:
                     logging.info(f"Enriched {platform} listing {source_id} from raw snapshot")
                     persist_listing(listing, update_only=True)
-                    # If we filled all missing info, we can return early
                     if listing.get('beds') is not None and listing.get('baths') is not None and listing.get('sqft') is not None:
-                        return
+                        if listing.get('price') and listing.get('price') > 1100:
+                             return
             except Exception as e:
                 logging.debug(f"Failed to enrich {source_id} from snapshot: {e}")
 
@@ -266,7 +326,7 @@ async def enrich_single_listing(listing):
         logging.info(f"Enriching {platform} listing {source_id} via {url}")
         
         async with network_semaphore:
-            response = await scraper.fetch(url)
+            response = await scraper.fetch_detail(url)
         
         if not response:
             return
