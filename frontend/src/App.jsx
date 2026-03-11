@@ -120,7 +120,7 @@ function App() {
                       Price
                       <ChevronDown size={14} className={`transition-transform duration-200 ${open ? 'rotate-180' : ''}`} />
                     </Popover.Button>
-                    <Popover.Panel className="absolute z-50 mt-2 w-80 bg-[#10141e] border border-[#1d2335] rounded-xl shadow-2xl p-6 ui-popover-enter ui-popover-enter-from ui-popover-enter-to ui-popover-leave ui-popover-leave-from ui-popover-leave-to">
+                    <Popover.Panel transition className="absolute z-50 mt-2 w-80 bg-[#10141e] border border-[#1d2335] rounded-xl shadow-2xl p-6 transition duration-200 ease-out data-[closed]:-translate-y-1 data-[closed]:opacity-0 data-[closed]:scale-95">
                       <div className="flex flex-col gap-4">
                         <label className="text-[13px] font-bold text-slate-200">Price Range</label>
                         <div className="flex items-center gap-3">
@@ -170,7 +170,7 @@ function App() {
                       Beds/baths
                       <ChevronDown size={14} className={`transition-transform duration-200 ${open ? 'rotate-180' : ''}`} />
                     </Popover.Button>
-                    <Popover.Panel className="absolute z-50 mt-2 w-[480px] -left-10 lg:left-0 bg-[#10141e] border border-[#1d2335] rounded-xl shadow-2xl p-6 ui-popover-enter ui-popover-enter-from ui-popover-enter-to ui-popover-leave ui-popover-leave-from ui-popover-leave-to">
+                    <Popover.Panel transition className="absolute z-50 mt-2 w-[480px] -left-10 lg:left-0 bg-[#10141e] border border-[#1d2335] rounded-xl shadow-2xl p-6 transition duration-200 ease-out data-[closed]:-translate-y-1 data-[closed]:opacity-0 data-[closed]:scale-95">
                        <div className="flex flex-col gap-6">
                         <div className="flex flex-col gap-3">
                           <label className="text-[15px] font-bold text-slate-200 flex items-baseline gap-2">
@@ -260,7 +260,7 @@ function App() {
                       Home type
                       <ChevronDown size={14} className={`transition-transform duration-200 ${open ? 'rotate-180' : ''}`} />
                     </Popover.Button>
-                    <Popover.Panel className="absolute z-50 mt-2 w-[340px] -left-10 lg:left-0 bg-[#10141e] border border-[#1d2335] rounded-xl shadow-2xl p-6 ui-popover-enter ui-popover-enter-from ui-popover-enter-to ui-popover-leave ui-popover-leave-from ui-popover-leave-to">
+                    <Popover.Panel transition className="absolute z-50 mt-2 w-[340px] -left-10 lg:left-0 bg-[#10141e] border border-[#1d2335] rounded-xl shadow-2xl p-6 transition duration-200 ease-out data-[closed]:-translate-y-1 data-[closed]:opacity-0 data-[closed]:scale-95">
                        <div className="flex flex-col gap-6">
                          <div className="flex gap-4">
                           {typeOptions.map((opt) => {
