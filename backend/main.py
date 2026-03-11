@@ -34,36 +34,23 @@ def persist_listing(listing, update_only=False):
         if update_only:
             c.execute('''
                 UPDATE rentals SET
-                    beds = COALESCE(rentals.beds, ?),
-                    baths = COALESCE(rentals.baths, ?),
-                    sqft = COALESCE(rentals.sqft, ?),
-                    city = COALESCE(rentals.city, ?),
-                    state = COALESCE(rentals.state, ?),
-                    price = CASE 
-                        WHEN (rentals.price IS NULL OR rentals.price = 0 OR rentals.price < 1100) THEN ? 
-                        ELSE rentals.price 
-                    END,
-                    extra_metadata = CASE
-                        WHEN (rentals.extra_metadata IS NULL OR rentals.extra_metadata = '{}' OR rentals.extra_metadata = '') THEN ?
-                        ELSE rentals.extra_metadata
-                    END,
-                    canonical_url = CASE 
-                        WHEN (
-                            rentals.canonical_url = 'https://www.redfin.com' OR 
-                            rentals.canonical_url = 'https://www.redfin.com/rentals/renter-dashboard' OR
-                            rentals.canonical_url = 'https://www.zillow.com'
-                        ) THEN ? 
-                        ELSE rentals.canonical_url 
-                    END,
-                    description = CASE 
-                        WHEN (rentals.description IS NULL OR rentals.description = '') THEN ? 
-                        ELSE rentals.description 
-                    END,
+                    beds = ?,
+                    baths = ?,
+                    sqft = ?,
+                    city = ?,
+                    state = ?,
+                    zip = ?,
+                    raw_address = ?,
+                    price = ?,
+                    extra_metadata = ?,
+                    canonical_url = ?,
+                    description = ?,
                     last_seen = CURRENT_DATE
                 WHERE source = ? AND source_id = ?
             ''', (
                 listing.get('beds'), listing.get('baths'), listing.get('sqft'),
-                listing.get('city'), listing.get('state'),
+                listing.get('city'), listing.get('state'), listing.get('zip'),
+                listing.get('raw_address'),
                 listing.get('price'),
                 json.dumps(listing.get('extra_metadata', {})),
                 listing['canonical_url'],
@@ -288,13 +275,28 @@ async def enrich_single_listing(listing):
 
                 # Merge details from snapshot
                 updated = False
-                for key in ['beds', 'baths', 'sqft', 'price', 'raw_address']:
+                for key in ['beds', 'baths', 'sqft', 'price', 'raw_address', 'city', 'state', 'zip']:
                     val = snapshot_details.get(key)
                     if val is not None:
-                        if listing.get(key) is None or listing.get(key) == 0:
-                            listing[key] = val
-                            updated = True
-                        elif key == 'price' and listing.get(key) < 1100 and val > 1100:
+                        current_val = listing.get(key)
+                        
+                        # Aggressively update beds, baths, sqft, and address details during double verification
+                        should_update = False
+                        
+                        if key in ['beds', 'baths', 'sqft', 'city', 'state', 'zip']:
+                            should_update = True
+                        elif key == 'raw_address':
+                            is_garbage_current = isinstance(current_val, str) and ('ago' in current_val.lower() or 'apply' in current_val.lower() or 'price' in current_val.lower() or len(current_val) < 10)
+                            is_garbage_val = isinstance(val, str) and ('ago' in val.lower() or 'apply' in val.lower() or 'price' in val.lower())
+                            if not is_garbage_val and (current_val is None or current_val == "Unknown Address" or is_garbage_current):
+                                should_update = True
+                        else: # price or others
+                            if current_val is None or current_val == 0:
+                                should_update = True
+                            elif key == 'price' and current_val < 1100 and val > 1100:
+                                should_update = True
+                                
+                        if should_update and val != current_val:
                             listing[key] = val
                             updated = True
                 

@@ -628,11 +628,11 @@ class ZillowScraper(BaseScraper):
 
         # 2. Try markdown link text
         if not raw_address:
-            link_text_match = re.search(r'\[(.*?)\]\(https://www\.zillow\.com', text)
-            if link_text_match:
-                cand = link_text_match.group(1).strip()
+            for match in re.finditer(r'\[(.*?)\]\(https://www\.zillow\.com', text):
+                cand = match.group(1).strip()
                 if len(cand) > 5 and 'zillow' not in cand.lower() and '$' not in cand:
                     raw_address = cand
+                    break
 
         # 3. Fallback to lines
         if not raw_address or '$' in raw_address or len(raw_address) < 5 or 'Zillow' in raw_address:
@@ -657,10 +657,13 @@ class ZillowScraper(BaseScraper):
         price_match = re.search(r'\$(\d{1,3}(?:,\d{3})*(?:\+)?(?:\/mo)?)', text)
         price_str = price_match.group(1) if price_match else None
         
+        # Clean text of markdown bold/italic before specs extraction
+        clean_text_for_specs = re.sub(r'[*_]+', '', text)
+
         # Specs
-        beds_match = re.search(r'(\b\d+|\b(?:studio)\b)\s*[|\s]*\s*(?:bd|beds?|bedroom)(?:\+)?', text, re.I)
+        beds_match = re.search(r'(\b\d+|\b(?:studio)\b)\s*[|\s]*\s*(?:bd|beds?|bedroom)(?:\+)?', clean_text_for_specs, re.I)
         if not beds_match:
-            beds_match = re.search(r'\b(studio)\b', text, re.I)
+            beds_match = re.search(r'\b(studio)\b', clean_text_for_specs, re.I)
         
         beds_val = beds_match.group(1) if beds_match else None
         if beds_val and str(beds_val).lower() == 'studio':
@@ -671,9 +674,9 @@ class ZillowScraper(BaseScraper):
             except:
                 beds = None
         
-        baths = self._parse_baths(text)
+        baths = self._parse_baths(clean_text_for_specs)
         
-        sqft = self._extract_sqft(text)
+        sqft = self._extract_sqft(clean_text_for_specs)
         
         listing = {
             'source': 'zillow',
