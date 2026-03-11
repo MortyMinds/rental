@@ -1,8 +1,0 @@
-scrapling
-sqlite3
-argparse
-logging
-datetime
-json
-re
-python-dotenv

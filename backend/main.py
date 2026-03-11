@@ -41,6 +41,8 @@ def persist_listing(listing, update_only=False):
                     beds = COALESCE(rentals.beds, ?),
                     baths = COALESCE(rentals.baths, ?),
                     sqft = COALESCE(rentals.sqft, ?),
+                    city = COALESCE(rentals.city, ?),
+                    state = COALESCE(rentals.state, ?),
                     canonical_url = CASE 
                         WHEN (
                             rentals.canonical_url = 'https://www.redfin.com' OR 
@@ -57,6 +59,7 @@ def persist_listing(listing, update_only=False):
                 WHERE source = ? AND source_id = ?
             ''', (
                 listing.get('beds'), listing.get('baths'), listing.get('sqft'),
+                listing.get('city'), listing.get('state'),
                 listing['canonical_url'],
                 listing.get('description', ''),
                 listing['source'], listing['source_id']
@@ -306,6 +309,15 @@ async def enrich_single_listing(listing):
             except:
                 listing['extra_metadata'] = {}
         
+        # Backfill city/state from canonical_url if still missing
+        if not listing.get('city') or not listing.get('state'):
+            from utils import extract_city_from_url
+            url_city, url_state = extract_city_from_url(listing.get('canonical_url', ''))
+            if not listing.get('city') and url_city:
+                listing['city'] = url_city
+            if not listing.get('state') and url_state:
+                listing['state'] = url_state
+        
         # Persist updated listing with update_only=True
         persist_listing(listing, update_only=True)
         
@@ -329,7 +341,7 @@ async def enrich_listings():
     c.execute('''
         SELECT * FROM rentals 
         WHERE (
-            (baths IS NULL OR sqft IS NULL OR beds IS NULL)
+            (baths IS NULL OR sqft IS NULL OR beds IS NULL OR city IS NULL OR state IS NULL)
             OR canonical_url = 'https://www.redfin.com'
             OR canonical_url = 'https://www.redfin.com/rentals/renter-dashboard'
             OR canonical_url = 'https://www.zillow.com'

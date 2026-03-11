@@ -1,22 +1,64 @@
 import re
 
-def parse_address(address: str):
+def extract_city_from_url(url):
+    """
+    Extracts city and state from Redfin/Zillow canonical URLs.
+    Redfin: /CA/Santa-Clara/...
+    Zillow: /apartments/santa-clara-ca/...
+    Zillow: /homedetails/...-Santa-Clara-CA-95050/...
+    """
+    if not url:
+        return None, None
+    
+    # Redfin: /CA/Santa-Clara/...
+    redfin_match = re.search(r'redfin\.com/([A-Z]{2})/([A-Za-z-]+)/', url)
+    if redfin_match:
+        state = redfin_match.group(1).upper()
+        city = redfin_match.group(2).replace('-', ' ').title()
+        return city, state
+    
+    # Zillow: /apartments/santa-clara-ca/...
+    zillow_match = re.search(r'zillow\.com/apartments/([a-z-]+)-([a-z]{2})/', url, re.I)
+    if zillow_match:
+        city = zillow_match.group(1).replace('-', ' ').title()
+        state = zillow_match.group(2).upper()
+        return city, state
+    
+    # Zillow homedetails: /homedetails/...-Santa-Clara-CA-95050/...
+    zillow_detail = re.search(r'zillow\.com/homedetails/.*?-([A-Za-z-]+)-([A-Z]{2})-(\d{5})/', url)
+    if zillow_detail:
+        city = zillow_detail.group(1).replace('-', ' ').title()
+        state = zillow_detail.group(2).upper()
+        return city, state
+    
+    return None, None
+
+def parse_address(address: str, zip_code: str = None, url: str = None):
     """
     Parses a raw address string into (city, state, zip).
     Assumes standard US format: "Street, City, ST 12345"
-    Also handles variations like "Street, City, ST"
+    Falls back to URL extraction when city/state can't be parsed.
     """
     if not address:
-        return None, None, None
+        city, state = None, None
+        if url:
+            city, state = extract_city_from_url(url)
+        return city, state, zip_code
         
     parts = [p.strip() for p in address.split(',')]
     if len(parts) < 2:
-        # Maybe it's not comma separated. Try regex on whole string.
+        # Not comma-separated. Try regex on whole string.
         state_match = re.search(r'\b([A-Z]{2})\b', address)
         zip_match = re.search(r'\b(\d{5}(?:-\d{4})?)\b', address)
         state = state_match.group(1).upper() if state_match else None
-        zip_code = zip_match.group(1) if zip_match else None
-        return None, state, zip_code
+        found_zip = zip_match.group(1) if zip_match else zip_code
+        city = None
+        # Fallback: extract from URL
+        if url:
+            city, url_state = extract_city_from_url(url)
+            if not state:
+                state = url_state
+        return city, state, found_zip
         
     # Last part usually contains State and Zip
     last_part = parts[-1]
@@ -24,23 +66,28 @@ def parse_address(address: str):
     
     if state_zip_match:
         state = state_zip_match.group(1).upper()
-        zip_code = state_zip_match.group(2)
+        found_zip = state_zip_match.group(2)
     else:
-        # Try state without zip in the last part
         state_match = re.search(r'([A-Z]{2})', last_part, re.I)
         state = state_match.group(1).upper() if state_match else None
-        # Look for zip anywhere else?
         zip_match = re.search(r'\b(\d{5})\b', address)
-        zip_code = zip_match.group(1) if zip_match else None
+        found_zip = zip_match.group(1) if zip_match else zip_code
     
     # City is usually the second to last part
     city = parts[-2] if len(parts) >= 2 else None
     
-    # Clean up city if it has extra info
     if city:
         city = re.sub(r'#.*', '', city).strip()
-        
-    return city, state, zip_code
+    
+    # Fallback: extract from URL if city/state still missing
+    if (not city or not state) and url:
+        url_city, url_state = extract_city_from_url(url)
+        if not city and url_city:
+            city = url_city
+        if not state and url_state:
+            state = url_state
+    
+    return city, state, found_zip
 
 def extract_fees_from_description(description: str) -> list:
     """

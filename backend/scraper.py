@@ -35,7 +35,7 @@ class BaseScraper:
         Sequence: markdown.new -> r.jina.ai -> defuddle.md -> raw url
         """
         import httpx
-        from scrapling import Adaptor
+        from scrapling import Selector
         
         prefixes = [
             "https://markdown.new/",
@@ -93,8 +93,8 @@ class BaseScraper:
                         
                 if is_valid:
                     logging.info(f"Successfully fetched {self.source} using prefix: '{prefix}' (Found Listings: {has_listings})")
-                    # Wrap in Adaptor to maintain compatibility with .css() calls
-                    return Adaptor(text)
+                    # Wrap in Selector to maintain compatibility with .css() calls
+                    return Selector(text)
                 else:
                     logging.warning(f"Fetch via '{prefix}' failed. Status: {status}, Length: {len(text) if text else 0}")
             except Exception as e:
@@ -121,6 +121,95 @@ class BaseScraper:
             return 0
         cleaned = "".join(filter(str.isdigit, price_str))
         return int(cleaned) if cleaned else 0
+
+    def _extract_sqft(self, text: str) -> int | None:
+        """
+        Enhanced sqft extraction with multiple strategies, ordered by reliability.
+        Handles various formats found in Redfin/Zillow detail pages.
+        """
+        import re
+        text_lower = text.lower() if text else ""
+        
+        # Strategy 1: JSON-LD / structured data (most reliable)
+        # Look for "livingArea":1200 or "floorSize":{"value":"1200"}
+        json_patterns = [
+            r'"livingarea"\s*:\s*(\d+)',
+            r'"floorsize"\s*:\s*\{[^}]*"value"\s*:\s*"?(\d+)',
+            r'"living_area"\s*:\s*(\d+)',
+            r'"sqft"\s*:\s*(\d+)',
+        ]
+        for pat in json_patterns:
+            m = re.search(pat, text_lower)
+            if m:
+                try:
+                    val = int(m.group(1))
+                    if 100 <= val <= 50000:  # Sanity check
+                        logging.debug(f"sqft extracted via JSON pattern: {val}")
+                        return val
+                except: pass
+        
+        # Strategy 2: Structured line pattern "N bed(s) N bath(s) N,NNN sq ft"
+        # This is the most common format on detail pages and avoids nearby listing pollution
+        structured = re.search(
+            r'(\d+)\s*(?:beds?|bd)\s+(\d[\d.]*)\s*(?:baths?|ba)\s+([\d,]+)\s*(?:sq\s*ft|sqft)',
+            text_lower, re.I
+        )
+        if structured:
+            try:
+                val = int(structured.group(3).replace(',', ''))
+                if 100 <= val <= 50000:
+                    logging.debug(f"sqft extracted via structured bed/bath/sqft pattern: {val}")
+                    return val
+            except: pass
+        
+        # Strategy 3: Labeled patterns ("Size: 1,200 sq ft", "Living Area: 950 Sq. Ft.")
+        labeled_patterns = [
+            r'(?:size|area|living\s*(?:area|space)|floor\s*(?:size|area))\s*[:\-|]\s*([\d,]+)\s*(?:sq|sf)',
+            r'(?:size|area|living\s*(?:area|space)|floor\s*(?:size|area))\s*[:\-|]\s*([\d,]+)',
+        ]
+        for pat in labeled_patterns:
+            m = re.search(pat, text_lower)
+            if m:
+                try:
+                    val = int(m.group(1).replace(',', ''))
+                    if 100 <= val <= 50000:
+                        logging.debug(f"sqft extracted via labeled pattern: {val}")
+                        return val
+                except: pass
+        
+        # Strategy 4: Standard "N sqft" / "N sq ft" pattern (first match, not findall)
+        # Use word boundary to avoid matching partial numbers
+        # For ranges like "758 - 1,378 sqft", capture the first number
+        standard_patterns = [
+            r'([\d,]+)\s*[-–—]\s*[\d,]+\s*(?:sqft|sq\.?\s*ft\.?|square\s*feet)\b',  # Range: pick first
+            r'([\d,]+)\s*(?:sqft|sq\.?\s*ft\.?|square\s*feet)\b',  # Single value
+            r'([\d,]+)\s*sf\b',
+        ]
+        for pat in standard_patterns:
+            m = re.search(pat, text_lower)
+            if m:
+                try:
+                    val = int(m.group(1).replace(',', ''))
+                    if 100 <= val <= 50000:
+                        logging.debug(f"sqft extracted via standard pattern: {val}")
+                        return val
+                except: pass
+        
+        # Strategy 5: Collect all sqft mentions and pick the most likely one
+        # For apartment complexes, prefer the first reasonable value
+        all_sqft = re.findall(r'([\d,]+)\s*(?:sqft|sq\.?\s*ft\.?|square\s*feet|sf)\b', text_lower)
+        if all_sqft:
+            try:
+                vals = [int(v.replace(',', '')) for v in all_sqft if v.replace(',', '').isdigit()]
+                # Filter to reasonable range
+                vals = [v for v in vals if 100 <= v <= 50000]
+                if vals:
+                    # For detail pages, the first reasonable value is usually the property's own sqft
+                    logging.debug(f"sqft extracted via findall (first reasonable): {vals[0]}")
+                    return vals[0]
+            except: pass
+        
+        return None
 
 @ScraperRegistry.register("zillow")
 class ZillowScraper(BaseScraper):
@@ -298,7 +387,7 @@ class ZillowScraper(BaseScraper):
                 listing['price'] = self._clean_price(listing['price'])
                 
                 # Extract city, state, zip
-                listing['city'], listing['state'], listing['zip'] = parse_address(listing['raw_address'])
+                listing['city'], listing['state'], listing['zip'] = parse_address(listing['raw_address'], url=listing.get('canonical_url'))
                 
                 # Extract property type
                 listing['property_type'] = extract_property_type(listing['canonical_url'], listing['description'])
@@ -339,21 +428,22 @@ class ZillowScraper(BaseScraper):
             
         full_text = text.lower()
         
+        # Reject too-short responses (anti-bot empty shells)
+        if len(text) < 500:
+            logging.warning(f"Zillow detail page too short ({len(text)} chars). Likely blocked.")
+            return {}
+        
         # Check for CAPTCHA/Block
         if "confirm you are human" in full_text or "captcha" in full_text or "security check" in full_text:
             logging.warning("Zillow detail page returned CAPTCHA/Block. Skipping.")
             return {}
 
         # 1. Address Extraction from detail page
-        # Zillow often has the full address in the title or a specific header
-        # Look for "Address | City, ST Zip" or "Address, City, ST Zip"
-        # Example: "123 Main St | Santa Clara, CA 95051"
         raw_address = None
-        # Try different address patterns in the text
         patterns = [
-            r'([^|]+)\s*\|\s*([^,]+),\s*([A-Z]{2})\s*(\d{5})', # Pipe separated
-            r'([^,]+),\s*([^,]+),\s*([A-Z]{2})\s*(\d{5})',     # Comma separated
-            r'address\s*:\s*([^|,\n]+(?:,\s*[^|,\n]+){2,3})' # Labelled address
+            r'([^|]+)\s*\|\s*([^,]+),\s*([A-Z]{2})\s*(\d{5})',
+            r'([^,]+),\s*([^,]+),\s*([A-Z]{2})\s*(\d{5})',
+            r'address\s*:\s*([^|,\n]+(?:,\s*[^|,\n]+){2,3})'
         ]
         
         for pattern in patterns:
@@ -366,12 +456,8 @@ class ZillowScraper(BaseScraper):
                 break
 
         # 2. Specs Extraction
-        # Beds: look for "1 bd", "Studio", "2 beds", etc.
         beds_match = re.search(r'(\d+|\b(?:studio)\b)\s*(?:bd|beds?|bedroom)', full_text, re.I)
-        # Baths: look for "1 ba", "1.5 baths", "2 bathrooms", etc.
         baths_match = re.search(r'([\d.]+)\s*(?:ba|baths?|bathrooms?)', full_text, re.I)
-        # Sqft: handle ranges like "758 - 1,378 sqft" and single values
-        sqft_match = re.search(r'(?:[\d,.-]+\s*-\s*)?([\d,.]+)\s*(?:sqft|sq\s*ft|square\s*feet|sf)', full_text, re.I)
         
         beds = None
         if beds_match:
@@ -385,50 +471,27 @@ class ZillowScraper(BaseScraper):
             except: pass
         
         if baths is None:
-            # Look for patterns like "1-2 Baths" or "1.5 Baths"
             m = re.search(r'([\d.]+)\s*(?:-\s*[\d.]+\s*)?ba', full_text)
             if m: 
                 try: baths = float(m.group(1))
                 except: pass
         
-        # Third fallback for baths: look for any number followed by ba/bathrooms
         if baths is None:
             all_baths = re.findall(r'([\d.]+)\s*(?:ba|baths?|bathrooms?)', full_text)
             if all_baths:
                 try:
                     vals = [float(v) for v in all_baths if v.replace('.','',1).isdigit()]
-                    if vals: baths = min(vals) # Take the minimum bath count for complexes
+                    if vals: baths = min(vals)
                 except: pass
   
-        sqft = None
-        if sqft_match:
-            try:
-                # Clean up and pick the last number in a potential range
-                sqft_val = sqft_match.group(1).replace(',', '')
-                sqft = int(float(sqft_val))
-            except: pass
-        
-        if sqft is None:
-            # Aggressive sqft search for apartment complexes
-            # Look for patterns like "758 - 1,378 sqft" or "1,378 sqft"
-            m = re.search(r'([\d,]+)\s*(?:-\s*[\d,]+\s*)?sq\s*ft', full_text)
-            if m: sqft = int(m.group(1).replace(',', ''))
-         
-        # Third fallback for sqft: look for any number followed by sqft in the whole text
-        if sqft is None:
-            all_sqft = re.findall(r'([\d,]+)\s*(?:sqft|sq\s*ft|square\s*feet)', full_text)
-            if all_sqft:
-                # Try to pick a sensible one (usually the largest in an apartment complex represents max size)
-                try:
-                    vals = [int(v.replace(',', '')) for v in all_sqft if v.replace(',', '').isdigit()]
-                    if vals: sqft = max(vals)
-                except: pass
+        # --- Enhanced sqft extraction (ordered by reliability) ---
+        sqft = self._extract_sqft(full_text)
   
         details = {
             'beds': beds,
             'baths': baths,
             'sqft': sqft,
-            'description': text[:2000] # Update description with fuller text if available
+            'description': text[:2000]
         }
         if raw_address:
             details['raw_address'] = raw_address
@@ -521,7 +584,7 @@ class ZillowScraper(BaseScraper):
         }
         
         # Extract city, state, zip
-        listing['city'], listing['state'], listing['zip'] = parse_address(listing['raw_address'])
+        listing['city'], listing['state'], listing['zip'] = parse_address(listing['raw_address'], url=listing.get('canonical_url'))
         
         # Address Refinement
         if not listing['state'] or not listing['zip']:
@@ -655,7 +718,7 @@ class RedfinScraper(BaseScraper):
                 listing['price'] = self._clean_price(listing['price'])
                 
                 # Extract city, state, zip
-                listing['city'], listing['state'], listing['zip'] = parse_address(listing['raw_address'])
+                listing['city'], listing['state'], listing['zip'] = parse_address(listing['raw_address'], url=listing.get('canonical_url'))
                 
                 # Extract property type
                 listing['property_type'] = extract_property_type(listing['canonical_url'], listing['description'])
@@ -676,18 +739,22 @@ class RedfinScraper(BaseScraper):
             
         full_text = text.lower()
         
+        # Reject too-short responses (anti-bot empty shells)
+        if len(text) < 500:
+            logging.warning(f"Redfin detail page too short ({len(text)} chars). Likely blocked.")
+            return {}
+        
         # Check for CAPTCHA/Block
         if "confirm you are human" in full_text or "captcha" in full_text or "security check" in full_text or "human verification" in full_text:
             logging.warning("Redfin detail page returned CAPTCHA/Block. Skipping.")
             return {}
 
         # 1. Address Extraction
-        # Look for patterns like "Street | City, ST 12345" or "Street, City, ST 12345"
         raw_address = None
         patterns = [
-            r'([^|]+)\s*\|\s*([^,]+),\s*([A-Z]{2})\s*(\d{5})', # Pipe separated
-            r'([^,]+),\s*([^,]+),\s*([A-Z]{2})\s*(\d{5})',     # Comma separated
-            r'address\s*:\s*([^|,\n]+(?:,\s*[^|,\n]+){2,3})' # Labelled address
+            r'([^|]+)\s*\|\s*([^,]+),\s*([A-Z]{2})\s*(\d{5})',
+            r'([^,]+),\s*([^,]+),\s*([A-Z]{2})\s*(\d{5})',
+            r'address\s*:\s*([^|,\n]+(?:,\s*[^|,\n]+){2,3})'
         ]
         
         for pattern in patterns:
@@ -702,8 +769,6 @@ class RedfinScraper(BaseScraper):
         # 2. Specs Extraction
         beds_match = re.search(r'(\d+|Studio)\s*(?:bd|beds?|bedroom)', full_text, re.I)
         baths_match = re.search(r'([\d.]+)\s*(?:ba|baths?|bathrooms?)', full_text, re.I)
-        # Handle sqft ranges like "750 - 1,200 sqft"
-        sqft_match = re.search(r'(?:[\d,.-]+\s*-\s*)?([\d,.]+)\s*(?:sqft|sq\s*ft|square\s*feet|sf)', full_text, re.I)
         
         beds = None
         if beds_match:
@@ -711,17 +776,8 @@ class RedfinScraper(BaseScraper):
             
         baths = float(baths_match.group(1)) if (baths_match and baths_match.group(1).replace('.','',1).isdigit()) else None
         
-        sqft = None
-        if sqft_match:
-            try:
-                sqft_val = sqft_match.group(1).replace(',', '')
-                sqft = int(float(sqft_val))
-            except: pass
-        
-        if sqft is None:
-            # Aggressive sqft search for apartment complexes
-            m = re.search(r'([\d,]+)\s*(?:sq\s*ft|square\s*feet)', full_text)
-            if m: sqft = int(m.group(1).replace(',', ''))
+        # --- Enhanced sqft extraction (ordered by reliability) ---
+        sqft = self._extract_sqft(full_text)
 
         details = {
             'beds': beds,
@@ -864,7 +920,7 @@ class RedfinScraper(BaseScraper):
         }
         
         # Extract city, state, zip
-        listing['city'], listing['state'], listing['zip'] = parse_address(listing['raw_address'])
+        listing['city'], listing['state'], listing['zip'] = parse_address(listing['raw_address'], url=listing.get('canonical_url'))
         
         # Extract property type
         listing['property_type'] = extract_property_type(listing['canonical_url'], text)

@@ -17,25 +17,28 @@ The scraper is managed via a `.env` file. All platforms (Zillow and Redfin) are 
 - `MIN_BEDS` / `MIN_BATHS`: Numeric minimums for rooms.
 
 ## Installation
-1. Install dependencies:
+1. Install [uv](https://github.com/astral-sh/uv).
+2. Install dependencies and create venv:
    ```bash
-   pip3 install -r requirements.txt
+   cd backend
+   uv sync
    ```
-2. Initialize the database (optional, will be initialized on first run):
+3. Initialize the database (optional, will be initialized on first run):
    ```bash
-   python database.py
+   uv run database.py
    ```
 
 ## Usage
-Everything is managed via the `.env` file. Once configured, simply run:
+Everything is managed via the `.env` file (place it in the `backend/` folder). Once configured, run:
 ```bash
-python3 main.py
+cd backend
+uv run main.py
 ```
 
 ## Daily Cron Job Setup
 To run the scraper daily at 2:00 AM, add the following to your crontab (`crontab -e`):
 ```cron
-0 2 * * * /usr/bin/python3 /Users/bytedance/Documents/rental/main.py >> /Users/bytedance/Documents/rental/scraper.log 2>&1
+0 2 * * * cd /Users/joseph/Documents/GitHub/rental/backend && /Users/joseph/.local/bin/uv run main.py >> /Users/joseph/Documents/GitHub/rental/backend/scraper.log 2>&1
 ```
 
 ## Database Schema
