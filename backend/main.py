@@ -129,7 +129,7 @@ def persist_listing(listing, update_only=False):
         
         # 2. Store Raw Snapshot
         c.execute('''
-            INSERT INTO raw_snapshots (source, source_id, raw_data, date)
+            INSERT OR IGNORE INTO raw_snapshots (source, source_id, raw_data, date)
             VALUES (?, ?, ?, CURRENT_DATE)
         ''', (listing['source'], listing['source_id'], json.dumps(listing)))
         

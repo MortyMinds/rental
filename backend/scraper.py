@@ -390,7 +390,7 @@ class ZillowScraper(BaseScraper):
                 listing['city'], listing['state'], listing['zip'] = parse_address(listing['raw_address'], url=listing.get('canonical_url'))
                 
                 # Extract property type
-                listing['property_type'] = extract_property_type(listing['canonical_url'], listing['description'])
+                listing['property_type'] = extract_property_type(listing['canonical_url'], listing['description'], listing.get('raw_address', ''))
                 
                 # Final refinement: if beds/baths/sqft are missing, try regex on description
                 desc_text = listing['description'].lower()
@@ -594,7 +594,7 @@ class ZillowScraper(BaseScraper):
             if not listing['zip']: listing['zip'] = zip_c
             
         # Extract property type
-        listing['property_type'] = extract_property_type(listing['canonical_url'], text)
+        listing['property_type'] = extract_property_type(listing['canonical_url'], text, listing.get('raw_address', ''))
         
         logging.info(f"Text-Parsed Zillow: ID={listing['source_id']} | Price={listing['price']} | Beds={listing['beds']} | Addr={listing['raw_address'][:30]}...")
         return listing
@@ -721,7 +721,7 @@ class RedfinScraper(BaseScraper):
                 listing['city'], listing['state'], listing['zip'] = parse_address(listing['raw_address'], url=listing.get('canonical_url'))
                 
                 # Extract property type
-                listing['property_type'] = extract_property_type(listing['canonical_url'], listing['description'])
+                listing['property_type'] = extract_property_type(listing['canonical_url'], listing['description'], listing.get('raw_address', ''))
                 
                 logging.info(f"Parsed Redfin: ID={listing['source_id']} | Price={listing['price']} | Beds={listing['beds']} | Baths={listing['baths']} | Addr={listing['raw_address'][:30]}...")
                 listings.append(listing)
@@ -915,7 +915,7 @@ class RedfinScraper(BaseScraper):
         listing['city'], listing['state'], listing['zip'] = parse_address(listing['raw_address'], url=listing.get('canonical_url'))
         
         # Extract property type
-        listing['property_type'] = extract_property_type(listing['canonical_url'], text)
+        listing['property_type'] = extract_property_type(listing['canonical_url'], text, listing.get('raw_address', ''))
         
         logging.info(f"Text-Parsed Redfin: ID={listing['source_id']} | Price={listing['price']} | Beds={listing['beds']} | Addr={listing['raw_address'][:30]}...")
         return listing

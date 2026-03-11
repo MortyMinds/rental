@@ -115,10 +115,15 @@ def extract_fees_from_description(description: str) -> list:
         
     return fees
 
-def extract_property_type(url: str, description: str) -> str:
+def extract_property_type(url: str, description: str, address: str = "") -> str:
     """
     Determines if a listing is an apartment, condo, or house.
     """
+    addr_lower = address.lower()
+    # Check address specifically for unit identifiers
+    if re.search(r'\b(unit|apt|apt\.|suite|ste)\b\s*[\w\d]+', addr_lower) or re.search(r'#\s*[\w\d]+', addr_lower) or 'apartment' in addr_lower:
+        return 'apartment'
+        
     text = f"{url} {description}".lower()
     if 'apartment' in text:
         return 'apartment'

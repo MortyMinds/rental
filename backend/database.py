@@ -38,7 +38,8 @@ def init_db():
             source TEXT,
             source_id TEXT,
             raw_data TEXT NOT NULL,
-            date DATE DEFAULT CURRENT_DATE
+            date DATE DEFAULT CURRENT_DATE,
+            UNIQUE(source, source_id, date)
         )
     ''')
 
