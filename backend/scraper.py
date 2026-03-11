@@ -511,17 +511,27 @@ class ZillowScraper(BaseScraper):
         
         # Address extraction FIRST
         raw_address = ""
-        # 1. Try markdown link text
-        link_text_match = re.search(r'\[(.*?)\]\(https://www\.zillow\.com', text)
-        if link_text_match:
-            raw_address = link_text_match.group(1).strip()
+        # 1. Try Title: marker if present (usually very clean)
+        title_match = re.search(r'Title:\s*(.*?)(?:\s*\||$)', text)
+        if title_match:
+            cand = title_match.group(1).strip()
+            if len(cand) > 5 and 'zillow' not in cand.lower():
+                raw_address = cand
 
-        # 2. If empty or looks like a price/junk, try lines
+        # 2. Try markdown link text
+        if not raw_address:
+            link_text_match = re.search(r'\[(.*?)\]\(https://www\.zillow\.com', text)
+            if link_text_match:
+                cand = link_text_match.group(1).strip()
+                if len(cand) > 5 and 'zillow' not in cand.lower() and '$' not in cand:
+                    raw_address = cand
+
+        # 3. Fallback to lines
         if not raw_address or '$' in raw_address or len(raw_address) < 5 or 'Zillow' in raw_address:
             lines = [l.strip() for l in text.split('\n') if l.strip()]
             for line in lines:
-                # Basic address-like check
-                if '$' not in line and not line.startswith('http') and len(line) > 5 and 'Title:' not in line:
+                # Basic address-like check: begins with digits or specific words
+                if re.match(r'^\d+', line) and '$' not in line and not line.startswith('http') and len(line) > 5:
                     raw_address = line.replace('###', '').strip()
                     break
         
@@ -560,15 +570,8 @@ class ZillowScraper(BaseScraper):
         except:
             baths = None
         
-        sqft_match = re.search(r'([\d,.]+)\s*(?:sqft|sq\s*ft|square\s*feet|sf)', text, re.I)
-        try:
-            if sqft_match:
-                sqft_val = sqft_match.group(1).replace(',', '')
-                sqft = int(float(sqft_val))
-            else:
-                sqft = None
-        except:
-            sqft = None
+        # --- Use the shared robust sqft extraction ---
+        sqft = self._extract_sqft(text)
         
         listing = {
             'source': 'zillow',
@@ -579,7 +582,7 @@ class ZillowScraper(BaseScraper):
             'beds': beds,
             'baths': baths,
             'sqft': sqft,
-            'description': text[:200].replace('\n', ' '),
+            'description': text[:4000].replace('\n', ' '), # Increased to preserve context for parsing
             'extra_metadata': {'parsed_from': 'text_fallback'}
         }
         
