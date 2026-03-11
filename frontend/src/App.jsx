@@ -333,66 +333,66 @@ function App() {
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
               {rentals.map((rental) => (
-                <div key={`${rental.source}-${rental.source_id}`} className="bg-[#10141e] border border-[#1d2335] rounded-2xl overflow-hidden hover:border-teal-500/40 transition-all group flex flex-col">
-                  {/* Card Image Area (Matches Screenshot solid block) */}
-                  <div className="h-44 bg-[#0a0d14] relative flex items-center justify-center">
-                    <span className="text-[#131926] font-black tracking-[0.2em] select-none text-5xl">
+                <div key={`${rental.source}-${rental.source_id}`} className="bg-[#10141e] border border-[#0f3b39] rounded-[24px] overflow-hidden hover:border-teal-500/60 transition-all group flex flex-col shadow-xl shadow-black/20">
+                  {/* Image Placeholder Area */}
+                  <div className="h-[220px] bg-[#070a13] relative flex items-center justify-center overflow-hidden">
+                    <span className="text-[#131926] font-black tracking-[0.25em] select-none text-7xl md:text-8xl whitespace-nowrap absolute opacity-80">
                       {rental.source.toUpperCase()}
                     </span>
-                    <div className="absolute top-4 right-4 flex flex-col gap-2 items-end">
-                      <div className="bg-[#052627] border border-teal-800/60 rounded-full px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-teal-500">
+                    <div className="absolute top-5 right-5 flex flex-col gap-2.5 items-end">
+                      <div className="bg-[#042a27] border border-[#094a45] rounded-full px-4 py-1.5 text-[11px] font-bold uppercase tracking-widest text-[#00e5c1] shadow-lg">
                         {rental.source}
                       </div>
                       {rental.property_type && (
-                        <div className="bg-[#052627] border border-teal-800/60 rounded-full px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-teal-500">
+                        <div className="bg-[#042a27] border border-[#094a45] rounded-full px-4 py-1.5 text-[11px] font-bold uppercase tracking-widest text-[#00e5c1] shadow-lg">
                           {rental.property_type}
                         </div>
                       )}
                     </div>
                   </div>
                   
-                  {/* Card Body */}
-                  <div className="p-5 flex flex-col flex-grow">
-                    <div className="flex justify-between items-center mb-3">
-                      <h3 className="text-[22px] font-extrabold tracking-tight text-white flex items-center">
-                         <span className="text-slate-500 font-semibold text-lg mr-1">$</span>
+                  {/* Card Details */}
+                  <div className="p-6 md:p-7 flex flex-col flex-grow bg-[#10141e]">
+                    <div className="flex justify-between items-center mb-5">
+                      <h3 className="text-[28px] font-extrabold tracking-tight text-white flex items-center leading-none">
+                         <span className="text-slate-500 font-semibold text-xl mr-2">$</span>
                          {rental.price?.toLocaleString() || 'N/A'}
                       </h3>
-                      <div className="flex items-center gap-2 text-[13px] font-bold text-slate-300">
-                        <div className="flex items-center gap-1.5 bg-[#181e2e] border border-[#21283b] px-2.5 py-1.5 rounded-lg">
-                          <BedDouble size={14} className="text-teal-500" />
+                      <div className="flex items-center gap-2.5 text-sm font-bold text-slate-200">
+                        <div className="flex items-center gap-2 bg-[#161b26] border border-[#22293b] px-3.5 py-2 rounded-xl">
+                          <BedDouble size={16} className="text-[#00e5c1]" />
                           {rental.beds !== null ? (rental.beds % 1 === 0 ? rental.beds : rental.beds) : '-'}
                         </div>
-                        <div className="flex items-center gap-1.5 bg-[#181e2e] border border-[#21283b] px-2.5 py-1.5 rounded-lg">
-                          <Bath size={14} className="text-teal-500" />
+                        <div className="flex items-center gap-2 bg-[#161b26] border border-[#22293b] px-3.5 py-2 rounded-xl">
+                          <Bath size={16} className="text-[#00e5c1]" />
                           {rental.baths !== null ? (rental.baths % 1 === 0 ? rental.baths : rental.baths) : '-'}
                         </div>
                       </div>
                     </div>
                     
-                    <div className="flex items-start gap-2 mb-3">
-                      <MapPin size={14} className="text-slate-500 shrink-0 mt-[3px]" />
-                      <p className="text-[13px] text-slate-300 font-medium leading-tight">
+                    <div className="flex items-start gap-3 mb-4">
+                      <MapPin size={16} className="text-slate-400 shrink-0 mt-[2px]" />
+                      <p className="text-[14px] text-slate-200 font-medium leading-relaxed">
                         {rental.raw_address} {rental.city && `, ${rental.city}`} {rental.state && `, ${rental.state}`} {rental.zip}
                       </p>
                     </div>
 
-                    <p className="text-[11px] text-slate-500 mb-6 line-clamp-3 leading-relaxed">
+                    <p className="text-[13px] text-slate-500 mb-8 line-clamp-3 leading-relaxed">
                       {rental.description ? rental.description : 'No description provided.'}
                     </p>
                     
-                    <div className="mt-auto border-t border-[#1d2335] pt-4 flex justify-between items-center">
-                      <span className="text-[11px] font-bold text-slate-500 bg-[#151a28] px-2.5 py-1 rounded-md">
+                    <div className="mt-auto border-t border-[#1d2335] pt-5 flex justify-between items-center">
+                      <span className="text-[12px] font-bold text-slate-400 bg-[#161b26] px-3 py-1.5 rounded-lg border border-[#22293b]">
                         {rental.sqft ? `${rental.sqft.toLocaleString()} sqft` : 'Unknown sqft'}
                       </span>
                       <a 
                         href={rental.canonical_url} 
                         target="_blank" 
                         rel="noreferrer" 
-                        className="text-teal-500 hover:text-teal-400 font-bold text-[13px] flex items-center gap-1 transition-colors group-hover:underline underline-offset-4"
+                        className="text-[#00e5c1] hover:text-teal-300 font-bold text-[14px] flex items-center gap-1.5 transition-colors group-hover:underline underline-offset-4"
                       >
                         View Details
-                        <ExternalLink size={14} strokeWidth={2.5} />
+                        <ExternalLink size={16} strokeWidth={2.5} />
                       </a>
                     </div>
                   </div>
