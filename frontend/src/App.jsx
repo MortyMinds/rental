@@ -333,26 +333,25 @@ function App() {
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
               {rentals.map((rental) => (
-                <div key={`${rental.source}-${rental.source_id}`} className="bg-[#10141e] border border-[#0f3b39] rounded-[24px] overflow-hidden hover:border-teal-500/60 transition-all group flex flex-col shadow-xl shadow-black/20">
-                  {/* Image Placeholder Area */}
-                  <div className="h-[220px] bg-[#070a13] relative flex items-center justify-center overflow-hidden">
-                    <span className="text-[#131926] font-black tracking-[0.25em] select-none text-7xl md:text-8xl whitespace-nowrap absolute opacity-80">
-                      {rental.source.toUpperCase()}
-                    </span>
-                    <div className="absolute top-5 right-5 flex flex-col gap-2.5 items-end">
-                      <div className="bg-[#042a27] border border-[#094a45] rounded-full px-4 py-1.5 text-[11px] font-bold uppercase tracking-widest text-[#00e5c1] shadow-lg">
+                <div key={`${rental.source}-${rental.source_id}`} className="bg-[#10141e] border border-[#0f3b39] rounded-[24px] overflow-hidden hover:border-teal-500/60 transition-all group flex flex-col shadow-xl shadow-black/20 relative">
+                  {/* Subtle Background Watermark */}
+                  <span className="absolute -top-4 -right-2 text-[#151b29] font-black tracking-widest select-none text-8xl pointer-events-none z-0">
+                    {rental.source.toUpperCase()}
+                  </span>
+                  
+                  {/* Card Details */}
+                  <div className="p-6 md:p-7 flex flex-col flex-grow relative z-10">
+                    <div className="flex gap-2 mb-5">
+                      <div className="bg-[#042a27] border border-[#094a45] rounded-full px-3.5 py-1.5 text-[10px] font-bold uppercase tracking-widest text-[#00e5c1] shadow-lg">
                         {rental.source}
                       </div>
                       {rental.property_type && (
-                        <div className="bg-[#042a27] border border-[#094a45] rounded-full px-4 py-1.5 text-[11px] font-bold uppercase tracking-widest text-[#00e5c1] shadow-lg">
+                        <div className="bg-[#042a27] border border-[#094a45] rounded-full px-3.5 py-1.5 text-[10px] font-bold uppercase tracking-widest text-[#00e5c1] shadow-lg">
                           {rental.property_type}
                         </div>
                       )}
                     </div>
-                  </div>
-                  
-                  {/* Card Details */}
-                  <div className="p-6 md:p-7 flex flex-col flex-grow bg-[#10141e]">
+
                     <div className="flex justify-between items-center mb-5">
                       <h3 className="text-[28px] font-extrabold tracking-tight text-white flex items-center leading-none">
                          <span className="text-slate-500 font-semibold text-xl mr-2">$</span>
