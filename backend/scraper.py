@@ -49,7 +49,7 @@ class BaseScraper:
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
             "Accept-Language": "en-US,en;q=0.9",
-            "Accept-Encoding": "gzip, deflate, br",
+            "Accept-Encoding": "gzip, deflate", # Removed 'br' to avoid brotli decoding issues
             "DNT": "1",
             "Connection": "keep-alive",
             "Upgrade-Insecure-Requests": "1",
@@ -366,7 +366,7 @@ class ZillowScraper(BaseScraper):
                                "")
                 if not description:
                     # Take a longer snippet of the card text as description
-                    description = card_text.replace("|", " ").strip()[:500]
+                    description = card_text.replace("|", " ").strip()[:2000]
 
                 listing = {
                     'source': 'zillow',
@@ -895,16 +895,8 @@ class RedfinScraper(BaseScraper):
         except:
             baths = None
         
-        sqft_match = re.search(r'([\d,]+)\s*(?:sqft|sq\s*ft)', text, re.I)
-        sqft = int(sqft_match.group(1).replace(',', '')) if (sqft_match and sqft_match.group(1).replace(',', '').isdigit()) else None
-        
-        # Double extraction for sqft
-        if sqft is None:
-            sqft_context = re.search(r'(?:size|space|area)[:\s]*([\d,]+)\s*(?:sqft|sq\s*ft|square\s*feet)', text, re.I)
-            if sqft_context:
-                try:
-                    sqft = int(sqft_context.group(1).replace(',', ''))
-                except: pass
+        # --- Use the shared robust sqft extraction ---
+        sqft = self._extract_sqft(text)
         
         listing = {
             'source': 'redfin',
@@ -915,7 +907,7 @@ class RedfinScraper(BaseScraper):
             'beds': beds,
             'baths': baths,
             'sqft': sqft,
-            'description': text[:500].replace('\n', ' '), # Keep more description for debugging
+            'description': text[:4000].replace('\n', ' '), # Increased to 4000 to preserve sqft data
             'extra_metadata': {'parsed_from': 'text_fallback'}
         }
         
