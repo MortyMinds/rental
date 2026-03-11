@@ -120,17 +120,25 @@ def extract_property_type(url: str, description: str, address: str = "") -> str:
     Determines if a listing is an apartment, condo, or house.
     """
     addr_lower = address.lower()
-    # Check address specifically for unit identifiers
+    url_lower = url.lower()
+    
+    # 1. Check address specifically for unit identifiers
     if re.search(r'\b(unit|apt|apt\.|suite|ste)\b\s*[\w\d]+', addr_lower) or re.search(r'#\s*[\w\d]+', addr_lower) or 'apartment' in addr_lower:
         return 'apartment'
         
+    # 2. Check canonical URL identifiers (strong indicators)
+    if '/homedetails/' in url_lower or '/home/' in url_lower:
+        return 'house'
+    if '/b/' in url_lower or '/apartments/' in url_lower or '/apartment/' in url_lower:
+        return 'apartment'
+        
+    # 3. Fallback to broad text search
     text = f"{url} {description}".lower()
     if 'apartment' in text:
         return 'apartment'
     if 'condo' in text:
         return 'condo'
-    if 'homedetails' in url:
-        return 'house'
+    
     return 'house'
 
 def build_url(platform: str, zipcode: str = None, page: int = 1, base_url: str = None, 
