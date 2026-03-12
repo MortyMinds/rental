@@ -141,9 +141,7 @@ def extract_property_type(url: str, description: str, address: str = "") -> str:
     
     return 'house'
 
-def build_url(platform: str, zipcode: str = None, page: int = 1, base_url: str = None, 
-              min_price: int = None, max_price: int = None, 
-              min_beds: int = None, min_baths: float = None) -> str:
+def build_url(platform: str, zipcode: str = None, page: int = 1, base_url: str = None) -> str:
     """
     Builds a search URL with normalized filter parameters.
     """
