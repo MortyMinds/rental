@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  rental-app:
+    build: .
+    image: rental-app:latest
+    container_name: rental-container
+    ports:
+      - "8123:8123"
+    volumes:
+      - ./backend/rental_data.db:/app/backend/rental_data.db
+    env_file:
+      - ./backend/.env
+    restart: unless-stopped
