@@ -589,10 +589,34 @@ class ZillowScraper(BaseScraper):
         if sqft is None:
             sqft = self._extract_sqft(full_text)
   
+        # Property Type Enhancement (requested by user)
+        home_type = None
+        # Strategy 1: Look for specific Zillow detail spans (classes often contain hdp__sc-1hoxd7t-2)
+        type_spans = response.css('span[class*="hdp__sc-1hoxd7t-2"]::text').getall()
+        for span in type_spans:
+            s_low = span.lower()
+            if any(kw in s_low for kw in ['apartment', 'condo', 'townhouse', 'single family', 'house', 'multi-family', 'manufactured']):
+                home_type = 'apartment' if 'apartment' in s_low else s_low
+                break
+        
+        if not home_type:
+            # Fallback for dynamic classes: search for text inside common fact containers
+            fact_spans = response.css('.boagUb span::text').getall()
+            for ts in fact_spans:
+                if ts.lower() == 'apartment':
+                    home_type = 'apartment'
+                    break
+
+        if not home_type:
+            # Last fallback to the utility function with the full text
+            from utils import extract_property_type
+            home_type = extract_property_type(response.url or "", text, raw_address or "")
+
         details = {
             'beds': beds,
             'baths': baths,
             'sqft': sqft,
+            'property_type': home_type,
             'description': text[:2000],
             'extra_metadata': {
                 'fee_status': fee_status
