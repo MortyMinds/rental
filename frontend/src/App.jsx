@@ -1,6 +1,7 @@
-import { useState, useEffect } from 'react';
-import { Search, BedDouble, Bath, MapPin, ExternalLink, Home, Building, ChevronDown } from 'lucide-react';
+import { useState, useEffect, useMemo } from 'react';
+import { Search, BedDouble, Bath, MapPin, ExternalLink, Home, Building, ChevronDown, ThumbsUp, ThumbsDown } from 'lucide-react';
 import { Popover } from '@headlessui/react';
+import { motion, AnimatePresence } from 'framer-motion';
 
 const bedOptions = [
   { label: 'Any', value: '' },
@@ -48,6 +49,57 @@ function App() {
   const [propertyType, setPropertyType] = useState([]);
   const [selectedPlatforms, setSelectedPlatforms] = useState([]);
 
+  // Like / Dislike State
+  const [likedIds, setLikedIds] = useState(() => {
+    const saved = localStorage.getItem('likedRentals');
+    return saved ? JSON.parse(saved) : [];
+  });
+  const [dislikedIds, setDislikedIds] = useState(() => {
+    const saved = localStorage.getItem('dislikedRentals');
+    return saved ? JSON.parse(saved) : [];
+  });
+
+  useEffect(() => {
+    localStorage.setItem('likedRentals', JSON.stringify(likedIds));
+  }, [likedIds]);
+
+  useEffect(() => {
+    localStorage.setItem('dislikedRentals', JSON.stringify(dislikedIds));
+  }, [dislikedIds]);
+
+  const toggleLike = (id) => {
+    if (likedIds.includes(id)) {
+      setLikedIds(prev => prev.filter(i => i !== id));
+    } else {
+      setLikedIds(prev => [...prev, id]);
+      setDislikedIds(prev => prev.filter(i => i !== id));
+    }
+  };
+
+  const toggleDislike = (id) => {
+    if (dislikedIds.includes(id)) {
+      setDislikedIds(prev => prev.filter(i => i !== id));
+    } else {
+      setDislikedIds(prev => [...prev, id]);
+      setLikedIds(prev => prev.filter(i => i !== id));
+    }
+  };
+
+  const sortedRentals = useMemo(() => {
+    return [...rentals].sort((a, b) => {
+      const aLiked = likedIds.includes(a.id);
+      const bLiked = likedIds.includes(b.id);
+      const aDisliked = dislikedIds.includes(a.id);
+      const bDisliked = dislikedIds.includes(b.id);
+
+      if (aLiked && !bLiked) return -1;
+      if (!aLiked && bLiked) return 1;
+      if (aDisliked && !bDisliked) return 1;
+      if (!aDisliked && bDisliked) return -1;
+      return 0;
+    });
+  }, [rentals, likedIds, dislikedIds]);
+
   const fetchRentals = async () => {
     setLoading(true);
     try {
@@ -70,12 +122,20 @@ function App() {
       const baseUrl = import.meta.env.DEV ? 'http://localhost:8123' : '';
       const response = await fetch(`${baseUrl}/api/rentals?${params.toString()}`);
       if (response.ok) {
-        setRentals(await response.json());
+        const data = await response.json();
+        if (Array.isArray(data)) {
+          setRentals(data);
+        } else {
+          console.error('API returned non-array data:', data);
+          setRentals([]);
+        }
       } else {
         console.error('Failed to fetch rentals');
+        setRentals([]);
       }
     } catch (err) {
       console.error(err);
+      setRentals([]);
     }
     setLoading(false);
   };
@@ -436,23 +496,72 @@ function App() {
               <p className="text-sm mt-1">Try adjusting your filters to see more results.</p>
             </div>
           ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-              {rentals.map((rental) => (
-                <div key={`${rental.source}-${rental.source_id}`} className={`bg-[#10141e] border rounded-[24px] overflow-hidden transition-all group flex flex-col shadow-xl shadow-black/20 relative ${
-                  rental.source.toLowerCase() === 'zillow'
-                    ? 'border-[#004fbd]/40 hover:border-[#006aff]/80 hover:shadow-[#006aff]/10'
-                    : rental.source.toLowerCase() === 'redfin'
-                    ? 'border-[#9c191a]/40 hover:border-[#c82021]/80 hover:shadow-[#c82021]/10'
-                    : 'border-[#0f3b39] hover:border-teal-500/60'
-                }`}>
-                  {/* Subtle Background Watermark */}
-                  <span className="absolute -top-4 -right-2 text-[#151b29] font-black tracking-widest select-none text-8xl pointer-events-none z-0">
-                    {rental.source.toUpperCase()}
-                  </span>
+            <motion.div 
+              layout
+              className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6"
+            >
+              <AnimatePresence mode="popLayout">
+                {sortedRentals.map((rental) => {
+                  const isLiked = likedIds.includes(rental.id);
+                  const isDisliked = dislikedIds.includes(rental.id);
+                  
+                  return (
+                    <motion.div
+                      layout
+                      key={`${rental.source}-${rental.source_id}`}
+                      initial={{ opacity: 0, scale: 0.9 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      exit={{ opacity: 0, scale: 0.9 }}
+                      transition={{ 
+                        type: "spring",
+                        stiffness: 300,
+                        damping: 30,
+                        opacity: { duration: 0.2 }
+                      }}
+                      className={`bg-[#10141e] border rounded-[24px] overflow-hidden transition-all duration-500 group flex flex-col shadow-xl shadow-black/20 relative ${
+                        isLiked 
+                          ? 'ring-2 ring-teal-500/50 border-teal-500/50' 
+                          : isDisliked 
+                          ? 'opacity-60 grayscale-[0.5] border-[#1d2335]' 
+                          : rental.source.toLowerCase() === 'zillow'
+                          ? 'border-[#004fbd]/40 hover:border-[#006aff]/80 hover:shadow-[#006aff]/10'
+                          : rental.source.toLowerCase() === 'redfin'
+                          ? 'border-[#9c191a]/40 hover:border-[#c82021]/80 hover:shadow-[#c82021]/10'
+                          : 'border-[#0f3b39] hover:border-teal-500/60'
+                      }`}
+                    >
+                    {/* Subtle Background Watermark */}
+                    <span className="absolute -top-4 -right-2 text-[#151b29] font-black tracking-widest select-none text-8xl pointer-events-none z-0">
+                      {rental.source.toUpperCase()}
+                    </span>
 
-                  {/* Card Details */}
-                  <div className="p-6 md:p-7 flex flex-col flex-grow relative z-10">
-                    <div className="flex gap-2 mb-5">
+                    {/* Like/Dislike Quick Actions */}
+                    <div className="absolute top-4 right-4 z-20 flex gap-2">
+                      <button
+                        onClick={() => toggleLike(rental.id)}
+                        className={`p-2 rounded-full transition-all ${
+                          isLiked 
+                            ? 'bg-teal-500 text-white shadow-lg shadow-teal-500/30 ring-4 ring-teal-500/20' 
+                            : 'bg-[#0b0e17]/80 text-slate-400 hover:text-teal-400 hover:bg-[#121622]'
+                        }`}
+                      >
+                        <ThumbsUp size={18} fill={isLiked ? "currentColor" : "none"} />
+                      </button>
+                      <button
+                        onClick={() => toggleDislike(rental.id)}
+                        className={`p-2 rounded-full transition-all ${
+                          isDisliked 
+                            ? 'bg-rose-500 text-white shadow-lg shadow-rose-500/30 ring-4 ring-rose-500/20' 
+                            : 'bg-[#0b0e17]/80 text-slate-400 hover:text-rose-400 hover:bg-[#121622]'
+                        }`}
+                      >
+                        <ThumbsDown size={18} fill={isDisliked ? "currentColor" : "none"} />
+                      </button>
+                    </div>
+
+                    {/* Card Details */}
+                    <div className="p-6 md:p-7 flex flex-col flex-grow relative z-10">
+                      <div className="flex gap-2 mb-5">
                       <div className={`rounded-full px-3.5 py-1.5 text-[10px] font-bold uppercase tracking-widest shadow-lg ${rental.source.toLowerCase() === 'zillow'
                         ? 'bg-[#006aff] border border-[#004fbd] text-white'
                         : rental.source.toLowerCase() === 'redfin'
@@ -511,9 +620,11 @@ function App() {
                       </a>
                     </div>
                   </div>
-                </div>
-              ))}
-            </div>
+                </motion.div>
+              );
+            })}
+          </AnimatePresence>
+            </motion.div>
           )}
         </main>
       </div>

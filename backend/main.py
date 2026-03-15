@@ -42,6 +42,7 @@ def persist_listing(listing, update_only=False):
                     zip = ?,
                     raw_address = ?,
                     price = ?,
+                    property_type = ?,
                     extra_metadata = ?,
                     canonical_url = ?,
                     description = ?,
@@ -52,6 +53,7 @@ def persist_listing(listing, update_only=False):
                 listing.get('city'), listing.get('state'), listing.get('zip'),
                 listing.get('raw_address'),
                 listing.get('price'),
+                listing.get('property_type'),
                 json.dumps(listing.get('extra_metadata', {})),
                 listing['canonical_url'],
                 listing.get('description', ''),
@@ -275,7 +277,7 @@ async def enrich_single_listing(listing):
 
                 # Merge details from snapshot
                 updated = False
-                for key in ['beds', 'baths', 'sqft', 'price', 'raw_address', 'city', 'state', 'zip']:
+                for key in ['beds', 'baths', 'sqft', 'price', 'property_type', 'raw_address', 'city', 'state', 'zip']:
                     val = snapshot_details.get(key)
                     if val is not None:
                         current_val = listing.get(key)
@@ -362,7 +364,9 @@ async def enrich_single_listing(listing):
         # Only update if the detail field is not None
         for key, value in details.items():
             if value is not None:
-                listing[key] = value
+                # For property_type, we always allow update if it came from detail page
+                if key == 'property_type' or listing.get(key) is None or listing.get(key) == 0:
+                    listing[key] = value
         
         # Re-parse extra metadata if it was a JSON string from the DB
         if isinstance(listing.get('extra_metadata'), str):

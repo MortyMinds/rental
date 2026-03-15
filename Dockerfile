@@ -38,7 +38,7 @@ RUN crontab /etc/cron.d/scraper-cron
 RUN touch /var/log/cron.log
 
 # Create start script that starts cron locally and then starts uvicorn server
-RUN echo '#!/bin/bash\n\ncron\n\ncd /app/backend\n# Run backend uvicorn server\n/root/.local/bin/uv run uvicorn api:app --host 0.0.0.0 --port 8123\n' > /app/start.sh
+RUN echo '#!/bin/bash\n\ncron\n\ncd /app/backend\n# Initialize database\n/root/.local/bin/uv run database.py\n# Run backend uvicorn server\n/root/.local/bin/uv run uvicorn api:app --host 0.0.0.0 --port 8123\n' > /app/start.sh
 RUN chmod +x /app/start.sh
 
 # Default env variables for scraping (changeable at runtime)
