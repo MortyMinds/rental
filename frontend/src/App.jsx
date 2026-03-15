@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { Search, BedDouble, Bath, MapPin, ExternalLink, Home, Building, ChevronDown, ThumbsUp, ThumbsDown } from 'lucide-react';
 import { Popover } from '@headlessui/react';
+import { motion, AnimatePresence } from 'framer-motion';
 
 const bedOptions = [
   { label: 'Any', value: '' },
@@ -121,12 +122,20 @@ function App() {
       const baseUrl = import.meta.env.DEV ? 'http://localhost:8123' : '';
       const response = await fetch(`${baseUrl}/api/rentals?${params.toString()}`);
       if (response.ok) {
-        setRentals(await response.json());
+        const data = await response.json();
+        if (Array.isArray(data)) {
+          setRentals(data);
+        } else {
+          console.error('API returned non-array data:', data);
+          setRentals([]);
+        }
       } else {
         console.error('Failed to fetch rentals');
+        setRentals([]);
       }
     } catch (err) {
       console.error(err);
+      setRentals([]);
     }
     setLoading(false);
   };
@@ -487,23 +496,40 @@ function App() {
               <p className="text-sm mt-1">Try adjusting your filters to see more results.</p>
             </div>
           ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-              {sortedRentals.map((rental) => {
-                const isLiked = likedIds.includes(rental.id);
-                const isDisliked = dislikedIds.includes(rental.id);
-                
-                return (
-                  <div key={`${rental.source}-${rental.source_id}`} className={`bg-[#10141e] border rounded-[24px] overflow-hidden transition-all duration-500 group flex flex-col shadow-xl shadow-black/20 relative ${
-                    isLiked 
-                      ? 'ring-2 ring-teal-500/50 border-teal-500/50' 
-                      : isDisliked 
-                      ? 'opacity-60 grayscale-[0.5] border-[#1d2335]' 
-                      : rental.source.toLowerCase() === 'zillow'
-                      ? 'border-[#004fbd]/40 hover:border-[#006aff]/80 hover:shadow-[#006aff]/10'
-                      : rental.source.toLowerCase() === 'redfin'
-                      ? 'border-[#9c191a]/40 hover:border-[#c82021]/80 hover:shadow-[#c82021]/10'
-                      : 'border-[#0f3b39] hover:border-teal-500/60'
-                  }`}>
+            <motion.div 
+              layout
+              className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6"
+            >
+              <AnimatePresence mode="popLayout">
+                {sortedRentals.map((rental) => {
+                  const isLiked = likedIds.includes(rental.id);
+                  const isDisliked = dislikedIds.includes(rental.id);
+                  
+                  return (
+                    <motion.div
+                      layout
+                      key={`${rental.source}-${rental.source_id}`}
+                      initial={{ opacity: 0, scale: 0.9 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      exit={{ opacity: 0, scale: 0.9 }}
+                      transition={{ 
+                        type: "spring",
+                        stiffness: 300,
+                        damping: 30,
+                        opacity: { duration: 0.2 }
+                      }}
+                      className={`bg-[#10141e] border rounded-[24px] overflow-hidden transition-all duration-500 group flex flex-col shadow-xl shadow-black/20 relative ${
+                        isLiked 
+                          ? 'ring-2 ring-teal-500/50 border-teal-500/50' 
+                          : isDisliked 
+                          ? 'opacity-60 grayscale-[0.5] border-[#1d2335]' 
+                          : rental.source.toLowerCase() === 'zillow'
+                          ? 'border-[#004fbd]/40 hover:border-[#006aff]/80 hover:shadow-[#006aff]/10'
+                          : rental.source.toLowerCase() === 'redfin'
+                          ? 'border-[#9c191a]/40 hover:border-[#c82021]/80 hover:shadow-[#c82021]/10'
+                          : 'border-[#0f3b39] hover:border-teal-500/60'
+                      }`}
+                    >
                     {/* Subtle Background Watermark */}
                     <span className="absolute -top-4 -right-2 text-[#151b29] font-black tracking-widest select-none text-8xl pointer-events-none z-0">
                       {rental.source.toUpperCase()}
@@ -594,10 +620,11 @@ function App() {
                       </a>
                     </div>
                   </div>
-                </div>
+                </motion.div>
               );
             })}
-          </div>
+          </AnimatePresence>
+            </motion.div>
           )}
         </main>
       </div>
